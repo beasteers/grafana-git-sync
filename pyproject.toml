@@ -1,0 +1,14 @@
+[project]
+name = "grafana_git_sync"
+description = "import/export from grafana"
+version = "0.0.1"
+authors = [{ name = "Bea Steers", email = "bea.steers@gmail.com" }]
+dependencies = ["requests", "PyYAML", "fire"]
+
+[project.scripts]
+grafana-git-sync = "grafana_git_sync.cli:main"
+grafana-git-sync-apply = "grafana_git_sync.cli:apply"
+grafana-git-sync-export = "grafana_git_sync.cli:export"
+
+[tool.setuptools]
+packages = ["grafana_git_sync"]

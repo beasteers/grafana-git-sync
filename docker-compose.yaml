@@ -1,0 +1,61 @@
+version: '3.7'
+
+services:
+  database:
+    image: postgis/postgis:13-master
+    # Required when running on platform other than amd64, like Apple M1/M2:
+    platform: linux/amd64
+    volumes:
+      - ./data/database:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: 'directus'
+      POSTGRES_PASSWORD: 'directus'
+      POSTGRES_DB: 'directus'
+
+  directus:
+    image: directus/directus:10.3
+    container_name: directus
+    ports:
+     - 8055:8055
+    environment:
+      KEY: asdfasdfasdfasdfasdf
+      SECRET: asdfasdfasdfasdfsadfafasdfasdfas
+      ADMIN_EMAIL: admin@admin.com
+      ADMIN_PASSWORD: admin
+      PUBLIC_URL: "http://localhost:8055"
+      DB_CLIENT: 'pg'
+      DB_HOST: 'database'
+      DB_PORT: '5432'
+      DB_DATABASE: 'directus'
+      DB_USER: 'directus'
+      DB_PASSWORD: 'directus'
+
+  directus-gitsync:
+    # image: ghcr.io/beasteers/nodered-git-sync:latest
+    image: directus-git-sync
+    container_name: directus-git
+    restart: unless-stopped
+    entrypoint: ['sh', '-c']
+    command: 
+      - 'while true; do sleep 1000; done'
+    build: 
+      context: .
+    volumes:
+      - ~/.ssh/id_rsa:/etc/git-secret/ssh
+      - ./data:/git
+      - ./directus_git_sync:/src/directus_git_sync
+    environment:
+      GITSYNC_REPO: git@github.com:floodnet-nyc/floodnet-directus
+      GITSYNC_REF: dep-azure-1
+      GITSYNC_PERIOD: "30s"
+      GITSYNC_SSH: "true"
+      LOG_LEVEL: DEBUG
+      DIRECTUS_URL: http://directus:8055
+      DIRECTUS_EMAIL: admin@admin.com
+      DIRECTUS_PASSWORD: admin
+      DIRECTUS_OUT_DIR: /git/floodnet-directus
+      # DIRECTUS_URL: https://directus.dep.floodlabs.nyc
+      # DIRECTUS_EMAIL: floodnetproject@gmail.com
+      # DIRECTUS_PASSWORD: w3t5tr33t5
+      # DIRECTUS_OUT_DIR: /git/floodnet-directus
+      
