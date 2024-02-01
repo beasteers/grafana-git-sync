@@ -2,9 +2,21 @@
 Backup/restore for grafana.
 
 ## Install
-
 ```bash
-docker run --rm -it ghcr.io/beasteers/grafana-git-sync --username admin --password admin
+pip install git+https://github.com/beasteers/grafana-git-sync.git
+```
+
+## Usage
+```bash
+grafana-git-sync export \
+    --url localhost:3000 \
+    --username admin \
+    --password admin
+
+grafana-git-sync apply \
+    --url grafana.myproject.com \
+    --username admin \
+    --password adminnnn
 ```
 
 
