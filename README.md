@@ -1,6 +1,14 @@
 # grafana-git-sync
 Backup/restore for grafana.
 
+## Install
+
+```bash
+docker run --rm -it ghcr.io/beasteers/grafana-git-sync --username admin --password admin
+```
+
+
+
 TODO:
 
 unimplemented methods:
