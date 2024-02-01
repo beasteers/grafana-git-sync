@@ -1,28 +1,15 @@
-# directus-git-sync
-A lightweight sidecar to apply directus schema and configuration.
+# grafana-git-sync
+Backup/restore for grafana.
 
-Handles:
- - schema
- - flows (and operations)
- - dashboards (and panels)
- - webhooks
- - roles
- - permissions
- - settings
+TODO:
 
-
-This is meant for doing GitOps-style bring-up of Directus, meaning that it only exports things that you might want to store in git.
-
-API endpoints it (purposefully) does not handle:
- - collection items
- - files
- - activity
- - folders (for now? idk)
- - notifications
- - presets
- - relations
- - revisions
- - shares
- - translations
-
-I think there could be a separate script that's specifically for "data" migration/import/export.
+unimplemented methods:
+ - create_folder_permission
+ - delete_folder_permission
+ - delete_contact_point
+ - create_notification_policy
+ - delete_notification_policy
+ - delete_snapshot
+ - delete_user
+ - delete_org
+ - delete_plugin
