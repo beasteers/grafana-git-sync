@@ -229,7 +229,7 @@ class API:
     def _replace_datasource(self, dash, uid_map):
         if isinstance(dash, dict):
             # find datasource and replace it with the datasource name instead
-            if 'datasource' in dash and 'uid' in dash['datasource'] and dash['datasource']['uid'] in uid_map:
+            if dash.get('datasource') and 'uid' in dash['datasource'] and dash['datasource']['uid'] in uid_map:
                 dash['datasource']['uid'] = uid_map[dash['datasource']['uid']]
             for k, v in dash.items():
                 dash[k] = self._replace_datasource(v, uid_map)
@@ -254,13 +254,14 @@ class API:
             title = d['title'].replace('/', '-')
             yield f"{folder}/{title}-{d['uid']}", di
 
-    def apply_dashboards(self, items):
+    def apply_dashboards(self, items, **kw):
         return self._apply(
             'dashboards', items,
             dump_fn=self.dump_dashboards,
             create_fn=self.create_dashboard,
             update_fn=self.create_dashboard,
             delete_fn=self.delete_dashboard,
+            **kw,
         )
 
     #endregion
@@ -300,13 +301,14 @@ class API:
                 continue
             yield f"{d['name']}-{d['uid']}", d
 
-    def apply_datasources(self, items):
+    def apply_datasources(self, items, **kw):
         return self._apply(
             'datasources', items,
             dump_fn=self.dump_datasources,
             create_fn=self.create_datasource,
             update_fn=self.create_datasource,
             delete_fn=self.delete_datasource,
+            **kw,
         )
 
     #endregion
@@ -356,22 +358,24 @@ class API:
             d = self.get_folder_permissions(d['uid'])
             yield d.get('name', d.get('uid')), d
 
-    def apply_folders(self, items):
+    def apply_folders(self, items, **kw):
         return self._apply(
             'folders', items,
             dump_fn=self.dump_folders,
             create_fn=self.create_folder,
             update_fn=self.update_folder,
             delete_fn=self.delete_folder,
+            **kw,
         )
 
-    def apply_folder_permissions(self, items):
+    def apply_folder_permissions(self, items, **kw):
         return self._apply(
             'folder_permissions', items,
             dump_fn=self.dump_folder_permissions,
             # create_fn=self.create_folder_permission,
             # update_fn=self.create_folder_permission,
             # delete_fn=self.delete_folder_permission,
+            **kw,
         )
 
     #endregion
@@ -398,13 +402,14 @@ class API:
         for d in payloads:
             yield f"{d['name']}-{d['uid']}", d
 
-    def apply_library_elements(self, items):
+    def apply_library_elements(self, items, **kw):
         return self._apply(
             'library_elements', items,
             dump_fn=self.dump_library_elements,
             create_fn=self.create_library_element,
             update_fn=self.create_library_element,
             delete_fn=self.delete_library_element,
+            **kw,
         )
     
     #endregion
@@ -437,13 +442,14 @@ class API:
             ts_to = ts_from
             ts_from = ts_from - one_month_in_ms
 
-    def apply_annotations(self, items):
+    def apply_annotations(self, items, **kw):
         return self._apply(
             'annotations', items,
             dump_fn=self.dump_annotations,
             create_fn=self.create_annotation,
             update_fn=self.create_annotation,
             delete_fn=self.delete_annotation,
+            **kw,
         )
 
     #endregion
@@ -496,13 +502,14 @@ class API:
         for d in payloads:
             yield d['uid'], d
     
-    def apply_alert_rules(self, items):
+    def apply_alert_rules(self, items, **kw):
         return self._apply(
             'alert_rules', items,
             dump_fn=self.dump_alert_rules,
             create_fn=self.create_alert_rule,
             update_fn=self.create_alert_rule,
             delete_fn=self.delete_alert_rule,
+            **kw,
         )
 
     #endregion
@@ -528,13 +535,14 @@ class API:
         for d in payloads:
             yield d.get('uid', d['id']), d
 
-    def apply_alert_channels(self, items):
+    def apply_alert_channels(self, items, **kw):
         return self._apply(
             'alert_channels', items,
             dump_fn=self.dump_alert_channels,
             create_fn=self.create_alert_channel,
             update_fn=self.create_alert_channel,
             delete_fn=self.delete_alert_channel,
+            **kw,
         )
 
     #endregion
@@ -561,13 +569,14 @@ class API:
         for d in payloads:
             yield f"{d['name']}-{d['uid']}", d
 
-    def apply_contact_points(self, items):
+    def apply_contact_points(self, items, **kw):
         return self._apply(
             'contact_points', items,
             dump_fn=self.dump_contact_points,
             create_fn=self.create_contact_point,
             update_fn=self.create_contact_point,
             # delete_fn=self.delete_contact_point,
+            **kw,
         )
     
     #endregion
@@ -587,13 +596,14 @@ class API:
         # for d in payloads:
         #     yield d.get('uid', d['id']), d
 
-    def apply_notification_policies(self, items):
+    def apply_notification_policies(self, items, **kw):
         return self._apply(
             'notification_policies', items,
             dump_fn=self.dump_notification_policies,
             create_fn=self.create_notification_policy,
             update_fn=self.create_notification_policy,
             # delete_fn=self.delete_notification_policy,
+            **kw,
         )
 
     #endregion
@@ -627,13 +637,14 @@ class API:
             # random_suffix = "".join(random.choice(string.ascii_letters) for _ in range(6))
             yield f"{name}-{d1['created']}", d
 
-    def apply_snapshots(self, items):
+    def apply_snapshots(self, items, **kw):
         return self._apply(
             'snapshots', items,
             dump_fn=self.dump_snapshots,
             create_fn=self.create_snapshot,
             update_fn=self.create_snapshot,
             # delete_fn=self.delete_snapshot,
+            **kw,
         )
 
     #endregion
@@ -683,13 +694,14 @@ class API:
             d['orgs'] = self.get_user_org(d['id'])
             yield d['login'], d
 
-    def apply_users(self, items):
+    def apply_users(self, items, **kw):
         return self._apply(
             'users', items,
             dump_fn=self.dump_users,
             create_fn=self.create_user,
             update_fn=self.create_user,
             # delete_fn=self.delete_user,
+            **kw,
         )
 
     #endregion
@@ -737,22 +749,24 @@ class API:
             for d in self.search_team_members(t['id']):
                 yield f"{d['teamId']}_{d['login']}", d
         
-    def apply_teams(self, items):
+    def apply_teams(self, items, **kw):
         return self._apply(
             'teams', items,
             dump_fn=self.dump_teams,
             create_fn=self.create_team,
             update_fn=self.create_team,
             delete_fn=self.delete_team,
+            **kw,
         )
     
-    def apply_team_members(self, items):
+    def apply_team_members(self, items, **kw):
         return self._apply(
             'team_members', items,
             dump_fn=self.dump_team_members,
             create_fn=self.create_team_member,
             update_fn=self.create_team_member,
             delete_fn=self.delete_team_member,
+            **kw,
         )
 
     #endregion
@@ -784,13 +798,14 @@ class API:
             d = self.get_org(d['id'])
             yield d['name'], d
 
-    def apply_orgs(self, items):
+    def apply_orgs(self, items, **kw):
         return self._apply(
             'orgs', items,
             dump_fn=self.dump_orgs,
             create_fn=self.create_org,
             update_fn=self.create_org,
             # delete_fn=self.delete_org,
+            **kw,
         )
 
     #endregion
@@ -827,19 +842,20 @@ class API:
         for d in payloads:
             yield f"{d['name']}-{d['id']}", d
     
-    def apply_plugins(self, items):
+    def apply_plugins(self, items, **kw):
         return self._apply(
             'plugins', items,
             dump_fn=self.dump_plugins,
             create_fn=self.create_plugin,
             update_fn=self.create_plugin,
             # delete_fn=self.delete_plugin,
+            **kw,
         )
 
     #endregion
     #region ------------------------ Export / Apply ------------------------------ #
 
-    def _apply(self, route, items: dict, dump_fn, create_fn, update_fn, delete_fn=None, existing=None, allow_delete=True):
+    def _apply(self, route, items: dict, dump_fn, create_fn, update_fn, delete_fn=None, existing=None, allow_delete=False, dry_run=False):
         existing = dict(dump_fn()) if existing is None else existing
 
         # check for new
@@ -847,8 +863,9 @@ class API:
         log.debug(f'new {route} {new}')
         if new:
             log.info(f"🌱 Creating {route}: {new}")
-            for k in new:
-                create_fn(items[k])
+            if not dry_run:
+                for k in new:
+                    create_fn(items[k])
 
         # check for changes
         in_common = set(items) & set(existing)
@@ -860,8 +877,15 @@ class API:
 
         if update:
             log.info(f"🔧 Updating {route}: {update}")
-            for k in update:
-                update_fn(items[k])
+            if not dry_run:
+                for k in update:
+                    newver = items[k].get('version')
+                    oldver = existing[k].get('version')
+                    if newver is not None and oldver is not None and newver < oldver:
+                        # log.warning(f"{route} {k} version {newver} < {oldver} currently deployed. Skipping.")
+                        # continue
+                        items[k]['version'] = oldver
+                    update_fn(items[k])
         
         # check for deleted
         missing = set(existing) - set(items)
@@ -870,32 +894,38 @@ class API:
         log.debug(f'delete {route} {delete}')
         if delete:
             log.warning(f"🗑 Deleting {route}: {delete}")
-            for k in delete:
-                delete_fn(items[k])
+            if not dry_run:
+                for k in delete:
+                    delete_fn(existing[k])
         elif missing:
             log.warning(f"Missing (skipping delete) {route}: {missing}")
 
         # summary
         log.info(
-            "%-16s :: %s. %s. %s. %s.", 
+            "%s%-16s :: %s. %s. %s. %s.", 
+            "[Dry Run]" if dry_run else "",
             route.strip('/').replace('/', '|').title(),
             status_text('new', i=len(new)), 
             status_text('modified', i=len(update)), 
-            status_text('deleted', i=len(delete)),
+            status_text('deleted' if allow_delete else 'additional', i=len(delete)),
             status_text('unchanged', i=len(unchanged)),
         )
         return new, update, delete, unchanged
 
 
-    def export(self, folder_path=DEFAULT_FOLDER_PATH, deleted_dir=None, allowed=None):
+    def export(self, folder_path=DEFAULT_FOLDER_PATH, deleted_dir=None, allowed=None, exclude=None, dry_run=False):
         allowed = (allowed.split(',') if isinstance(allowed, str) else allowed) or list(self.backup_functions)
+        if exclude:
+            allowed = [k for k in allowed if k not in exclude]
         for group in allowed:
-            export_dir(dict(self.backup_functions[group]()), folder_path, group, deleted_dir=deleted_dir)
+            export_dir(dict(self.backup_functions[group]()), folder_path, group, deleted_dir=deleted_dir, dry_run=dry_run)
 
-    def apply(self, folder_path=DEFAULT_FOLDER_PATH, allowed=None):
+    def apply(self, folder_path=DEFAULT_FOLDER_PATH, allowed=None, exclude=None, allow_delete=False, dry_run=False):
         allowed = (allowed.split(',') if isinstance(allowed, str) else allowed) or list(self.restore_functions)
+        if exclude:
+            allowed = [k for k in allowed if k not in exclude]
         for group in allowed:
-            self.restore_functions[group](load_dir(os.path.join(folder_path, group)))
+            self.restore_functions[group](load_dir(os.path.join(folder_path, group)), allow_delete=allow_delete, dry_run=dry_run)
 
     #endregion
 

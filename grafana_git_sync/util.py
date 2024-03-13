@@ -22,7 +22,7 @@ def export_one(data, out_dir, name, ext=EXT):
     log.info("%-16s :: %s.", name.title(), status_text(state))
     return 
 
-def _export_one(data, out_dir, name, ext=EXT):
+def _export_one(data, out_dir, name, ext=EXT, dry_run=False):
     existing = glob.glob(get_fname(out_dir, name, ext))  # TODO: search for other exts
     if existing:
         assert len(existing) == 1
@@ -32,11 +32,12 @@ def _export_one(data, out_dir, name, ext=EXT):
         state = 'modified'
     else:
         state = 'new'
-    dump_data(data, get_fname(out_dir, name, ext))
+    if not dry_run:
+        dump_data(data, get_fname(out_dir, name, ext))
     return state
 
 
-def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None):
+def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None, dry_run=False):
     counts = {'unchanged': 0, 'modified': 0, 'new': 0, 'deleted': 0}
 
     # write out files
@@ -44,7 +45,7 @@ def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None):
     existing = {_path_to_stem(f, f'{out_dir}/{name}') for f in _get_file_list(f'{out_dir}/{name}')}
 
     for name_i, d in data.items():
-        state = _export_one(d, f'{out_dir}/{name}', name_i, ext)
+        state = _export_one(d, f'{out_dir}/{name}', name_i, ext, dry_run=dry_run)
         counts[state] += 1
         current.add(name_i)
     
@@ -56,20 +57,23 @@ def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None):
         if deleted_dir:
             f2 = get_fname(f'{deleted_dir}/{name}', name_i, ext)
             log.warn('Deleting %s. Backing up to %s', f, f2)
-            os.makedirs(os.path.dirname(f2), exist_ok=True)
-            os.rename(f, f2)
+            if not dry_run:
+                os.makedirs(os.path.dirname(f2), exist_ok=True)
+                os.rename(f, f2)
         else:
             log.warn("%s :: Deleting %s", name, name_i)
-            os.remove(f)
+            if not dry_run:
+                os.remove(f)
         # log.warn("%s :: Removing %s", name, name_i)
         # os.remove(get_fname(out_dir, name, ext))
         counts['deleted'] += 1
 
     if not any(counts.values()):
-        log.info("%-16s :: 🫥  none.", name.title())
+        log.info("%s%-16s :: 🫥  none.", "[Dry Run]" if dry_run else "", name.title())
     else:
         log.info(
-            "%-16s :: %s. %s. %s. %s.", 
+            "%s%-16s :: %s. %s. %s. %s.", 
+            "[Dry Run]" if dry_run else "",
             name.title(), *(
                 status_text(k, i=counts[k]) 
                 for k in ['new', 'modified', 'deleted', 'unchanged']
@@ -202,8 +206,8 @@ class C:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-COLORS = {'new': C.CYAN, 'modified': C.YELLOW, 'deleted': C.RED, 'unchanged': C.GREEN, 'none': C.BLUE}
-ICONS = {'new': '🌱', 'modified': '🍂', 'deleted': '🪵 ', 'unchanged': '🌲', 'none': '🫥'}
+COLORS = {'new': C.CYAN, 'modified': C.YELLOW, 'deleted': C.RED, 'additional': C.RED, 'unchanged': C.GREEN, 'none': C.BLUE}
+ICONS = {'new': '🌱', 'modified': '🍂', 'deleted': '🪵 ', 'additional': '🪵 ', 'unchanged': '🌲', 'none': '🫥'}
 
 
 def color_text(color, x, i=True):

@@ -11,7 +11,9 @@ from .api import API
 log = logging.getLogger(__name__.split('.')[0])
 
 
-def apply(username=USERNAME, password=PASSWORD, url=URL, src_dir=EXPORT_DIR, only=None, force: 'bool'=False):
+def apply(
+        username=USERNAME, password=PASSWORD, url=URL, src_dir=EXPORT_DIR, 
+        allowed=None, exclude=None, dry_run: bool=False):
     """Apply to Grafana instance."""
     assert url and username and password, "missing url and/or credentials"
     log.info(f"Importing Grafana to {url}")
@@ -19,18 +21,19 @@ def apply(username=USERNAME, password=PASSWORD, url=URL, src_dir=EXPORT_DIR, onl
 
     api = API(url)
     api.login(username, password)
-    api.apply(src_dir)
+    api.apply(src_dir, allowed=allowed, exclude=exclude, dry_run=dry_run)
 
 
-def export(username=USERNAME, password=PASSWORD, url=URL, out_dir=EXPORT_DIR):
+def export(username=USERNAME, password=PASSWORD, url=URL, out_dir=EXPORT_DIR, dry_run: bool=False):
     '''Dump the configuration of Grafana to disk.'''
     assert url and username and password, "missing url and credentials"
+    # assert dry_run
     log.info(f"Exporting Grafana from {url}")
     log.info(f"Saving to {out_dir}\n")
 
     api = API(url)
     api.login(username, password)
-    api.export(out_dir)
+    api.export(out_dir, dry_run=dry_run)
 
 
 
