@@ -265,6 +265,12 @@ class API:
             di = self.get_dashboard(d['uid'])
             di['dashboard'] = self._replace_datasource(di['dashboard'], datasource_uids)
             title = d['title'].replace('/', '-')
+            if 'meta' in di:
+                di['meta'].pop('created', None)
+                di['meta'].pop('updated', None)
+            if 'dashboard' in di:
+                di['dashboard'].pop('id', None)
+                # di['dashboard'].pop('version', None)
             yield f"{folder}/{title}-{d['uid']}", di
 
     def apply_dashboards(self, items, **kw):
