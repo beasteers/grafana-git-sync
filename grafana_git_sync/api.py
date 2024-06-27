@@ -45,7 +45,7 @@ class API:
         backup_functions['organizations'] = self.dump_orgs
         backup_functions['users'] = self.dump_users
         backup_functions['snapshots'] = self.dump_snapshots
-        # backup_functions['dashboard-versions'] = self.dump_dashboard_versions
+        # backup_functions['dashboard_versions'] = self.dump_dashboard_versions
         backup_functions['annotations'] = self.dump_annotations
         backup_functions['library_elements'] = self.dump_library_elements
         backup_functions['teams'] = self.dump_teams
@@ -97,6 +97,13 @@ class API:
             log.error('%s: %s', response.status_code, response.content.decode())
             raise
         except requests.exceptions.HTTPError as e:
+            try:
+                data = response.json()
+                if data.get('status') == 'version-mismatch':
+                    log.warning('%s: %s', response.status_code, response.content.decode())
+                    return
+            except Exception:
+                pass
             log.error('%s: %s', response.status_code, response.content.decode())
             raise
     
@@ -198,7 +205,13 @@ class API:
     def create_dashboard(self, payload, fname=None):
         payload = self._replace_folder(payload, fname)
         payload['dashboard']['id'] = None
-        return self.post('/api/dashboards/db', payload)
+        try:
+            return self.post('/api/dashboards/db', payload)
+        except requests.HTTPError as e:
+            if e.response.json().get('message') == 'Cannot save provisioned dashboard':
+                log.warning(e.response.content)
+                return
+            raise
     
     # def get_dashboard_versions(self, dashboard_id):
     #     return self.get(f'/api/dashboards/id/{dashboard_id}/versions')
@@ -314,7 +327,9 @@ class API:
     #endregion
     #region ---------------------------- Folders --------------------------------- #
 
-    def search_folders(self, **params):
+    def search_folders(self, query=None, **params):
+        if query:
+            params['query'] = query
         return self.get('/api/search/?type=dash-folder', params=params)
 
     def get_folder(self, uid):
@@ -323,11 +338,17 @@ class API:
     def create_folder(self, payload, fname=None):
         payload.pop('id', None)
         try:
-            existing = self.get_folder(payload['uid'])
-            if existing['version'] >= payload.get('version'):
-                return
+            try:
+                existing = self.get_folder(payload['uid'])
+                if existing.get('version') and payload.get('version') and existing['version'] >= payload['version']:
+                    return
+            except Exception as e:
+                existing = self.search_folders(payload['title'])
+                if existing:
+                    return 
+                payload['uid'] = existing[0]['uid']
             return self.update_folder(payload)
-        except Exception:
+        except Exception as e:
             return self.post('/api/folders', payload)
 
     def update_folder(self, payload):
@@ -823,7 +844,13 @@ class API:
         try:
             existing = self.get_plugin(uid)
         except Exception:
-            print(self.install_plugin(uid))
+            try:
+                print(self.install_plugin(uid))
+            except requests.HTTPError as e:
+                if e.response.status_code == 409 and e.response.json().get('message').lower().strip('.', '') == 'plugin already installed':
+                    log.warning(e.response.content)
+                    return
+                raise
         # d = self.update_plugin(uid, payload)
         # if input(): embed()
         return 
@@ -840,7 +867,7 @@ class API:
     def dump_plugins(self):
         payloads = self.get_plugins()
         for d in payloads:
-            yield f"{d['name']}-{d['id']}", d
+            yield f"{d['id']}", d
     
     def apply_plugins(self, items, **kw):
         return self._apply(
