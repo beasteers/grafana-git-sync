@@ -15,7 +15,6 @@ import yaml
 import base64
 from grafana_git_sync.util import export_dir
 from packaging import version
-import simplejson
 from .util import load_dir, status_text, dict_diff, norm_cm_key
 
 from IPython import embed
@@ -38,11 +37,11 @@ class API:
             self.login(username, password)
 
         backup_functions = collections.OrderedDict()
+        backup_functions['organizations'] = self.dump_orgs
         backup_functions['dashboards'] = self.dump_dashboards
         backup_functions['datasources'] = self.dump_datasources
         backup_functions['folders'] = self.dump_folders
         backup_functions['alert_channels'] = self.dump_alert_channels
-        backup_functions['organizations'] = self.dump_orgs
         backup_functions['users'] = self.dump_users
         backup_functions['snapshots'] = self.dump_snapshots
         # backup_functions['dashboard_versions'] = self.dump_dashboard_versions
@@ -58,13 +57,13 @@ class API:
 
         restore_functions = collections.OrderedDict()
         # Folders must be restored before Library-Elements
+        restore_functions['organizations'] = self.apply_orgs
         restore_functions['plugins'] = self.apply_plugins
         restore_functions['folders'] = self.apply_folders
         restore_functions['datasources'] = self.apply_datasources
         restore_functions['library_elements'] = self.apply_library_elements
         restore_functions['dashboards'] = self.apply_dashboards
         restore_functions['alert_channels'] = self.apply_alert_channels
-        restore_functions['organizations'] = self.apply_orgs
         # restore_functions['users'] = self.apply_users
         restore_functions['snapshots'] = self.apply_snapshots
         restore_functions['annotations'] = self.apply_annotations
@@ -72,7 +71,7 @@ class API:
         restore_functions['team_members'] = self.apply_team_members
         # restore_functions['folder_permissions'] = self.apply_folder_permissions
         restore_functions['alert_rules'] = self.apply_alert_rules
-        restore_functions['contact_points'] = self.apply_contact_points
+        # restore_functions['contact_points'] = self.apply_contact_points
         self.restore_functions = restore_functions
 
     def login(self, username, password):
@@ -92,8 +91,10 @@ class API:
         # log.debug('%s', response.status_code)
         try:
             response.raise_for_status()
+            if not response.content:
+                return 
             return response.json()
-        except simplejson.decoder.JSONDecodeError as e:
+        except requests.exceptions.JSONDecodeError as e:
             log.error('%s: %s', response.status_code, response.content.decode())
             raise
         except requests.exceptions.HTTPError as e:
