@@ -7,14 +7,26 @@ pip install git+https://github.com/beasteers/grafana-git-sync.git
 ```
 
 ## Usage
+Assuming I want to export Grafana to this directory: `application/grafana`
 ```bash
+# export from one version and save to disk
 grafana-git-sync export \
-    --url localhost:3000 \
+    --path application/grafana \
+    --url http://localhost:3000 \
     --username admin \
     --password admin
 
+# compare export with other grafana version
+grafana-git-sync diff \
+    --path application/grafana \
+    --url https://grafana.myproject.com \
+    --username admin \
+    --password adminnnn
+
+# apply export to other grafana
 grafana-git-sync apply \
-    --url grafana.myproject.com \
+    --path application/grafana \
+    --url https://grafana.myproject.com \
     --username admin \
     --password adminnnn
 ```

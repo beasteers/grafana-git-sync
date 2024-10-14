@@ -3,20 +3,17 @@ import logging
 log = logging.getLogger(__name__)
 log.setLevel(getattr(logging, os.getenv("LOG_LEVEL") or "INFO"))
 
-URL = os.getenv("GRAFANA_URL") or "http://localhost:3000"
-USERNAME = os.getenv("GRAFANA_USERNAME") or "admin"
-PASSWORD = os.getenv("GRAFANA_PASSWORD") or "admin"
+# local env file
+load_env = lambda: {k.strip():v.strip() for k,v in (x.split('=',1) for x in open('.env').readlines() if x.strip() and not x.strip().startswith('#'))} if os.path.isfile('.env') else {}
+os.environ.update(load_env())
 
-EXPORT_DIR = os.getenv("DIRECTUS_OUT_DIR")
-REPO = os.getenv("GITSYNC_REPO")
-LINK = os.getenv("GITSYNC_LINK")
-ROOT = os.getenv("GITSYNC_ROOT")
-if not LINK and REPO:
-    LINK = REPO.split('/')[-1].removesuffix('.git')
-if not EXPORT_DIR and ROOT and LINK:
-    EXPORT_DIR = os.path.join(ROOT or '/git', LINK)
-EXPORT_DIR = EXPORT_DIR or 'grafana'
+# env vars
+ENV_PREFIX = os.environ.get("GRAFANA_ENV") or "GRAFANA"
+URL = os.environ.get(ENV_PREFIX + "_URL") or "http://localhost:3000"
+USERNAME = os.environ.get(ENV_PREFIX + "_USER") or "admin"
+PASSWORD = os.environ.get(ENV_PREFIX + "_PASS") or "admin"
+EXPORT_DIR = os.environ.get(ENV_PREFIX + "_PATH") or "grafana"
 
-from .api import API
 from . import util
-from .cli import export, apply, wipe
+from .api import API
+from .resources import Resources

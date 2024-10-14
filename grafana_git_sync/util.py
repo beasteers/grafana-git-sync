@@ -5,17 +5,25 @@ import re
 import csv
 import glob
 import json
-import yaml
+import difflib
+import ruamel.yaml
+import ruamel.yaml.scalarstring
 from datetime import datetime
-# try:
-#     from yaml import CLoader as Loader, CDumper as Dumper
-# except ImportError:
-#     from yaml import Loader, Dumper
-
 import logging
 log = logging.getLogger(__name__.split('.')[0])
 
-EXT = 'json'
+EXT = 'yaml'
+yaml=ruamel.yaml.YAML(typ='rt')
+
+def confirm(*questions, default_yes=False, bye="Okie bye <3"):
+    for q in questions:
+        if (
+            input(f'{q} y/[n]: ').strip().lower() != 'y' 
+            if not default_yes else
+            input(f'{q} [y]/n: ').strip().lower() not in {'y', ''}
+        ):
+            log.info(bye)
+            raise SystemExit(0)
 
 def export_one(data, out_dir, name, ext=EXT):
     state = _export_one(data, out_dir, name, ext)
@@ -37,7 +45,7 @@ def _export_one(data, out_dir, name, ext=EXT, dry_run=False):
     return state
 
 
-def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None, dry_run=False):
+def export_dir(data, out_dir, name, ext=EXT, delete=True, deleted_dir=None, dry_run=False):
     counts = {'unchanged': 0, 'modified': 0, 'new': 0, 'deleted': 0}
 
     # write out files
@@ -50,23 +58,24 @@ def export_dir(data, out_dir, name, ext=EXT, deleted_dir=None, dry_run=False):
         current.add(name_i)
     
     # check for files that weren't written to
-    if deleted_dir is True:
-        deleted_dir = os.path.join(out_dir, '.deleted', datetime.now().strftime('%Y-%m-%dT%H:%M:%S'))
-    for name_i in existing - current:
-        f = get_fname(f'{out_dir}/{name}', name_i, ext)
-        if deleted_dir:
-            f2 = get_fname(f'{deleted_dir}/{name}', name_i, ext)
-            log.warn('Deleting %s. Backing up to %s', f, f2)
-            if not dry_run:
-                os.makedirs(os.path.dirname(f2), exist_ok=True)
-                os.rename(f, f2)
-        else:
-            log.warn("%s :: Deleting %s", name, name_i)
-            if not dry_run:
-                os.remove(f)
-        # log.warn("%s :: Removing %s", name, name_i)
-        # os.remove(get_fname(out_dir, name, ext))
-        counts['deleted'] += 1
+    if delete:
+        if deleted_dir is True:
+            deleted_dir = os.path.join(out_dir, '.deleted', datetime.now().strftime('%Y-%m-%dT%H:%M:%S'))
+        for name_i in existing - current:
+            f = get_fname(f'{out_dir}/{name}', name_i, ext)
+            if deleted_dir:
+                f2 = get_fname(f'{deleted_dir}/{name}', name_i, ext)
+                log.warn('Deleting %s. Backing up to %s', f, f2)
+                if not dry_run:
+                    os.makedirs(os.path.dirname(f2), exist_ok=True)
+                    os.rename(f, f2)
+            else:
+                log.warn("%s :: Deleting %s", name, name_i)
+                if not dry_run:
+                    os.remove(f)
+            # log.warn("%s :: Removing %s", name, name_i)
+            # os.remove(get_fname(out_dir, name, ext))
+            counts['deleted'] += 1
 
     if not any(counts.values()):
         log.info("%s%-16s :: 🫥  none.", "[Dry Run]" if dry_run else "", name.title())
@@ -122,6 +131,9 @@ def dump_data(data, file_path):
     # return
 
     os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
+    for f in alt_ext(file_path):
+        if input(f"Replace {f} with {file_extension} file? [y]/n: ").strip().lower() not in {'y', ''}:
+            os.remove(f)
     if file_extension == 'csv':
         with open(file_path, 'w', newline='') as csv_file:
             # iterator so you can write large csv files
@@ -139,7 +151,8 @@ def dump_data(data, file_path):
         log.info(f"💾↓ Wrote json to {file_path}")
     elif file_extension in ['yaml', 'yml']:
         with open(file_path, 'w') as yaml_file:
-            yaml.dump(data, yaml_file, default_flow_style=False)
+            ruamel.yaml.scalarstring.walk_tree(data)
+            yaml.dump(data, yaml_file)
         log.info(f"💾↓ Wrote yaml to {file_path}")
     elif file_extension in ['txt']:
         with open(file_path, 'w') as f:
@@ -147,6 +160,13 @@ def dump_data(data, file_path):
         log.info(f"💾↓ Wrote text to {file_path}")
     else:
         raise ValueError("Unsupported file format. Supported formats: csv, json, yaml/yml")
+
+
+def alt_ext(fname):
+    base, ext = os.path.splitext(fname)
+    fs = [f for f in glob.glob(f'{base}.*') if f != fname and os.path.splitext(f)[0] == base]
+    return fs
+
 
 def load_data(file_path):
     """
@@ -172,7 +192,7 @@ def load_data(file_path):
     elif file_extension in ['yaml', 'yml']:
         log.debug(f"📖 Reading yaml {file_path}")
         with open(file_path, 'r') as yaml_file:
-            return yaml.safe_load(yaml_file)
+            return yaml.load(yaml_file)
     elif file_extension in ['txt']:
         log.debug(f"📖 Reading text {file_path}")
         with open(file_path, 'w') as f:
@@ -182,17 +202,87 @@ def load_data(file_path):
 
 
 
-def dict_diff(d1, d2):
-    missing1 = d2.keys() - d1
-    missing2 = d1.keys() - d2
-    mismatch = {k for k in d1.keys() & d2 if d1[k] != d2[k]}
+# def dict_diff(d1, d2, ignore=None):
+#     missing1 = d2.keys() - d1
+#     missing2 = d1.keys() - d2
+#     mismatch = {k for k in d1.keys() & d2 if _filter_dict(d1[k], ignore) != _filter_dict(d2[k], ignore)}
+#     return missing1, missing2, mismatch
+
+def nested_dict_diff(d1, d2, ignore=None, _keys=(), _ignore=None, depth=-1):
+    _ignore = _ignore or {tuple(k.split('.') if isinstance(k, str) else k) for k in ignore or []}
+    if _keys in _ignore:
+        return set(), set(), set()
+    if depth == 0 or not isinstance(d1, dict) or not isinstance(d2, dict):
+        d1 = _filter_dict(d1, _ignore, _keys)
+        d2 = _filter_dict(d2, _ignore, _keys)
+        return set(),set(),{_keys} if d1 != d2 else set()
+
+    missing1 = {(*_keys, k) for k in d2.keys() - d1} - _ignore
+    missing2 = {(*_keys, k) for k in d1.keys() - d2} - _ignore
+    mismatch = set()
+    for k in d1.keys() & d2:
+        m1, m2, mm = nested_dict_diff(d1[k], d2[k], _keys=(*_keys, k), _ignore=_ignore, depth=depth-1)
+        missing1 |= m1
+        missing2 |= m2
+        mismatch |= mm
+
     return missing1, missing2, mismatch
 
+def _filter_dict(d, ignore, _current=()):
+    '''Drop nested keys from a dictionary'''
+    return {
+        k: _filter_dict(d[k], ignore, (*_current, k)) 
+        for k in d if (*_current, k) not in ignore
+    } if isinstance(d, dict) and ignore else d
+
+def _filter_dict_keep(d, keep, _current=()):
+    '''Keep nested keys from a dictionary'''
+    return {
+        k: _filter_dict_keep(d[k], keep, (*_current, k)) 
+        for k in d if (*_current, k) in {k[:len(_current)+1] for k in keep}
+    } if isinstance(d, dict) and keep else d
+
+
+def dict_prune(d):
+    if not isinstance(d, dict):
+        return d
+    return {k: dict_prune(v) for k, v in d.items() if v}
+
+
+def get_key(d, key, default=...):
+    keys = key.split('.') if isinstance(key, str) else key
+    try:
+        for k in keys:
+            if isinstance(d, (list, tuple)):
+                k = int(k)
+            d = d[k]
+    except (KeyError, IndexError):
+        if default is ...:
+            raise
+        return default
+    return d
 
 
 def norm_cm_key(name):
     name = re.sub('[^-._a-zA-Z0-9]+', '-', name)
     return name
+
+
+def indent(text, spaces=4):
+    return '\n'.join(' '*spaces + l for l in text.splitlines())
+
+def symbol_block(txt='', color=None, *, indent=0, maxlen=None, top_border=False):
+    lines = ''
+    s = SYMBOLS.get(color, '|')
+    txt = txt.splitlines() if txt else []
+    for i, l in enumerate(txt):
+        # '┌' if len(txt) > 1 else s
+        ii = s+' '*(indent+1) if i or not top_border else s+'─'*(indent+1)
+        lines += f"{color_text(color, ii)}{_truncate(l, maxlen)}\n"
+    return lines
+
+def _truncate(txt, maxlen):
+    return txt[:maxlen] + ('...' if len(txt) > maxlen else '') if maxlen else txt
 
 
 class C:
@@ -206,17 +296,35 @@ class C:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-COLORS = {'new': C.CYAN, 'modified': C.YELLOW, 'deleted': C.RED, 'additional': C.RED, 'unchanged': C.GREEN, 'none': C.BLUE}
-ICONS = {'new': '🌱', 'modified': '🍂', 'deleted': '🪵 ', 'additional': '🪵 ', 'unchanged': '🌲', 'none': '🫥'}
-
+COLORS = {'new': C.CYAN, 'modified': C.YELLOW, 'moved': C.YELLOW, 'deleted': C.RED, 'trash': C.RED, 'additional': C.RED, 'unchanged': C.GREEN, 'token': C.CYAN, 'none': C.BLUE}
+ICONS = {'new': '🌱', 'modified': '🍂', 'moved': '🚛', 'deleted': '🪵 ', 'trash': '🪵 ', 'additional': '🪵 ', 'unchanged': '🌲', 'none': '🫥'}
+SYMBOLS = {'new': '+', 'modified': '│', 'moved': '>', 'deleted': '×', 'trash': '×', 'additional': '×', 'unchanged': '.', 'none': '.'}
 
 def color_text(color, x, i=True):
-    return f'{color}{x}{C.END}'
+    x = "" if x is None else x
+    c = COLORS.get(color, getattr(C, color.upper(), None)) if color else None
+    return f'{c}{x}{C.END}' if c else x
 
 
-def status_text(status, fmt=None, i=True):
-    color = COLORS.get(status, status)
-    icon = ICONS.get(status,"")
-    fmt = fmt or status
-    fmt = f'{icon} {i} {fmt}' if i is not True else f'{icon} {fmt}'
-    return f'{color}{fmt}{C.END}' if i else fmt
+def status_text(status, fmt=None, i=True, icon=None):
+    color = COLORS.get(status)
+    icon = ICONS.get(icon or status,"") if icon is not False else ""
+    fmt = fmt or status or ""
+    fmt = f'{icon} {i: >2} {fmt}' if i is not True else f'{icon} {fmt}'
+    return f'{color}{fmt}{C.END}' if color else fmt
+
+
+
+def str_diff(old, new):
+    result = ""
+    codes = difflib.SequenceMatcher(a=old, b=new).get_opcodes()
+    for code in codes:
+        if code[0] == "equal": 
+            result += old[code[1]:code[2]]
+        elif code[0] == "delete":
+            result += color_text('red', old[code[1]:code[2]])
+        elif code[0] == "insert":
+            result += color_text('green', new[code[3]:code[4]])
+        elif code[0] == "replace":
+            result += (color_text('red', old[code[1]:code[2]]) + color_text('green', new[code[3]:code[4]]))
+    return result

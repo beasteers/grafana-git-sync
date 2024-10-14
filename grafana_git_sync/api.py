@@ -1,85 +1,35 @@
 #!/usr/bin/env python3
 
-from datetime import datetime
-import os
 import re
-import glob
-import argparse
-import contextlib
-import collections
-import logging
-import time
-import requests
+import tqdm
 import json
-import yaml
 import base64
-from grafana_git_sync.util import export_dir
+import logging
+import requests
 from packaging import version
-from .util import load_dir, status_text, dict_diff, norm_cm_key
-
-from IPython import embed
 
 log = logging.getLogger(__name__.split('.')[0])
 # log.setLevel(logging.DEBUG)
 
-DEFAULT_FOLDER_PATH = 'grafana'
 ROOT_FOLDER = 'General'
 
 class API:
     '''Query tool for grafana.'''
-    ROOT_FOLDER = ROOT_FOLDER
     def __init__(self, url, username=None, password=None, api_key=None):
         self.url = url
         self.headers = {"Content-type": "application/json"}
         self.api_key = api_key
         self.basicauth = None
+        self.org = None
         if username and password:
             self.login(username, password)
-
-        backup_functions = collections.OrderedDict()
-        backup_functions['organizations'] = self.dump_orgs
-        backup_functions['dashboards'] = self.dump_dashboards
-        backup_functions['datasources'] = self.dump_datasources
-        backup_functions['folders'] = self.dump_folders
-        backup_functions['alert_channels'] = self.dump_alert_channels
-        backup_functions['users'] = self.dump_users
-        backup_functions['snapshots'] = self.dump_snapshots
-        # backup_functions['dashboard_versions'] = self.dump_dashboard_versions
-        backup_functions['annotations'] = self.dump_annotations
-        backup_functions['library_elements'] = self.dump_library_elements
-        backup_functions['teams'] = self.dump_teams
-        backup_functions['team_members'] = self.dump_team_members
-        backup_functions['alert_rules'] = self.dump_alert_rules
-        backup_functions['contact_points'] = self.dump_contact_points
-        backup_functions['notification_policy'] = self.dump_notification_policies
-        backup_functions['plugins'] = self.dump_plugins
-        self.backup_functions = backup_functions
-
-        restore_functions = collections.OrderedDict()
-        # Folders must be restored before Library-Elements
-        restore_functions['organizations'] = self.apply_orgs
-        restore_functions['plugins'] = self.apply_plugins
-        restore_functions['folders'] = self.apply_folders
-        restore_functions['datasources'] = self.apply_datasources
-        restore_functions['library_elements'] = self.apply_library_elements
-        restore_functions['dashboards'] = self.apply_dashboards
-        restore_functions['alert_channels'] = self.apply_alert_channels
-        # restore_functions['users'] = self.apply_users
-        restore_functions['snapshots'] = self.apply_snapshots
-        restore_functions['annotations'] = self.apply_annotations
-        restore_functions['teams'] = self.apply_teams
-        restore_functions['team_members'] = self.apply_team_members
-        # restore_functions['folder_permissions'] = self.apply_folder_permissions
-        restore_functions['alert_rules'] = self.apply_alert_rules
-        # restore_functions['contact_points'] = self.apply_contact_points
-        self.restore_functions = restore_functions
 
     def login(self, username, password):
         self.basicauth = base64.b64encode(f"{username}:{password}".encode()).decode()
 
     #region --------------------------- Requests --------------------------------- #
 
-    def _req(self, method, path, basic=False, params=None, **kw):
+    def _req(self, method, path, basic=False, params=None, org=None, disable_provanance=False, **kw):
         log.debug('%s: %s', method, path)
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = dict(self.headers)
@@ -87,6 +37,11 @@ class API:
             headers['Authorization'] = f"Bearer {self.api_key}"
         else:
             headers['Authorization'] = f'Basic {self.basicauth}'
+        org = org or self.org
+        if org:
+            headers['X-Grafana-Org-Id'] = org
+        if disable_provanance:
+            headers['X-Disable-Provenance'] = 'true'
         response = requests.request(method, f"{self.url}{path}", headers=headers, params=params, **kw)
         # log.debug('%s', response.status_code)
         try:
@@ -170,26 +125,48 @@ class API:
     #region ----------------------- Service Accounts ----------------------------- #
 
     def search_service_accounts(self, name=None, page=1):
-        return self.get('/api/serviceaccounts/search', params={'query': name})
+        return self.get('/api/serviceaccounts/search', params={'query': name})['serviceAccounts']
     
     def get_service_account(self, id):
         return self.get(f'/api/serviceaccounts/{id}')
     
-    def create_service_account(self, payload, fname=None):
+    def create_service_account(self, payload):
         try:
             existing = self.search_service_accounts(payload['name'])[0]
             return self.update_service_account(existing['id'], payload)
         except Exception:
             return self.post('/api/serviceaccounts', payload)
     
-    def update_service_account(self, name, role):
-        return self.put('/api/serviceaccounts', {'name': name, 'role': role})
+    def update_service_account(self, payload):
+        # payload: {'name': name, 'role': role}
+        return self.put('/api/serviceaccounts', payload)
 
     #endregion
     #region -------------------------- Dashboards -------------------------------- #
 
-    def search_dashboards(self, page=0, limit=5000):
-        return self.get(f'/api/search/?type=dash-db', params={'page': page, 'limit': limit})
+    def search(self, query=None, _maxiter=1000, **params):
+        """Search folders and dashboards
+
+        query (str): Search Query e.g. dashboard title
+        tag (list[str]): List of tags to search for
+        type (str): Type to search for, dash-folder or dash-db
+        dashboardIds (list[int]): List of dashboard id's to search for
+        dashboardUIDs (list[str]): List of dashboard uid's to search for
+        folderUIDs (list[str]): List of folder UIDs to search in
+        starred (bool): Flag indicating if only starred Dashboards should be returned
+        limit (int): Limit the number of returned results (max is 5000; default is 1000)
+        page (int): Use this parameter to access hits beyond limit. Numbering starts at 1. limit param acts as page size. Only available in Grafana v6.2+.
+        """
+        results = []
+        for i in range(_maxiter):
+            x = self.get('/api/search', params={**params, 'query': query, 'page': i+1})
+            if not x:
+                break
+            results.extend(x)
+        return results
+
+    def search_dashboards(self, query=None, **params):
+        return self.search(query=query, type='dash-db', **params)
 
     def get_dashboard(self, uid):
         return self.get(f'/api/dashboards/uid/{uid}')
@@ -203,86 +180,71 @@ class API:
     def delete_dashboard(self, payload):
         return self.delete_dashboard_by_uid(payload['dashboard']['uid'])
 
-    def create_dashboard(self, payload, fname=None):
-        payload = self._replace_folder(payload, fname)
-        payload['dashboard']['id'] = None
+    # ----------------------------- Public Dashboards ---------------------------- #
+
+    def search_public_dashboards(self):
+        return self.get('/api/dashboards/public-dashboards')
+    
+    def get_public_dashboard(self, uid):
+        return self.get(f'/api/dashboards/uid/{uid}/public-dashboards/')['publicDashboards']
+    
+    def create_public_dashboard(self, uid, payload):
         try:
-            return self.post('/api/dashboards/db', payload)
+            return self.post(f"/api/dashboards/uid/{uid}/public-dashboards/{payload['uid']}", payload)
         except requests.HTTPError as e:
-            if e.response.json().get('message') == 'Cannot save provisioned dashboard':
-                log.warning(e.response.content)
-                return
-            raise
+            return self.post(f"/api/dashboards/uid/{uid}/public-dashboards/", payload)
+        
+    def update_public_dashboard(self, uid, payload):
+        return self.post(f"/api/dashboards/uid/{uid}/public-dashboards/{payload['uid']}", payload)
+
+    def delete_public_dashboard(self, uid, pd_uid):
+        return self.delete(f'/api/dashboards/uid/{uid}/public-dashboards/{pd_uid}')
+
+    # ----------------------------- Dashboard Versions --------------------------- #
+
+    def get_dashboard_versions(self, uid):
+        return self.get(f'/api/dashboards/uid/{uid}/versions')
     
-    # def get_dashboard_versions(self, dashboard_id):
-    #     return self.get(f'/api/dashboards/id/{dashboard_id}/versions')
-
-    # def get_dashboard_version(self, dashboard_id, version_number):
-    #     return self.get(f'/api/dashboards/id/{dashboard_id}/versions/{version_number}')
-
-    def _replace_folder(self, payload, fname=None):
-        fuid = 0
-        if fname:
-            folder_name = fname.split('/')[-2]
-            if folder_name != ROOT_FOLDER:
-                folders = self.search_folders(query=folder_name)
-                if folders:
-                    fuid = folders[0].get('id', 0)
-                else:
-                    fuid = self.create_folder({'title': folder_name}).get('id', 0)
-        else:
-            fuid = payload.get('meta', {}).get('folderUid', '')
-            fuid = self.get_folder(fuid).get('id', 0) if fuid else 0
-
-        return {
-            'dashboard': payload['dashboard'],
-            'folderId': fuid or 0,
-            'overwrite': True
-        }
-
-    def _replace_datasource(self, dash, uid_map):
-        if isinstance(dash, dict):
-            # find datasource and replace it with the datasource name instead
-            if dash.get('datasource') and 'uid' in dash['datasource'] and dash['datasource']['uid'] in uid_map:
-                dash['datasource']['uid'] = uid_map[dash['datasource']['uid']]
-            for k, v in dash.items():
-                dash[k] = self._replace_datasource(v, uid_map)
-        if isinstance(dash, list):
-            for i, x in enumerate(dash):
-                dash[i] = self._replace_datasource(x, uid_map)
-        return dash
-
-    # export/apply interface
+    def get_dashboard_version(self, uid, version):
+        return self.get(f'/api/dashboards/uid/{uid}/versions/{version}')
     
-    def dump_dashboards(self):
-        payloads = self.search_dashboards()
-        datasources = self.search_datasources()
-        datasource_uids = {
-            d['uid']: d['name']
-            for d in datasources
-        }
-        for d in payloads:
-            folder = (d.get('folderTitle') or self.ROOT_FOLDER).replace('/', '-')
-            di = self.get_dashboard(d['uid'])
-            di['dashboard'] = self._replace_datasource(di['dashboard'], datasource_uids)
-            title = d['title'].replace('/', '-')
-            if 'meta' in di:
-                di['meta'].pop('created', None)
-                di['meta'].pop('updated', None)
-            if 'dashboard' in di:
-                di['dashboard'].pop('id', None)
-                # di['dashboard'].pop('version', None)
-            yield f"{folder}/{title}-{d['uid']}", di
+    def restore_dashboard_version(self, uid, version):
+        return self.post(f'/api/dashboards/uid/{uid}/restore', {"version": version})
+    
+    def compare_dashboard_versions(self, uid, version1, version2):
+        return self.post(f'/api/dashboards/calculate-diff', {
+            "old": {"uid": uid, "version": version1},
+            "new": {"uid": uid, "version": version2},
+            "diffType": "json",
+        })
+    
+    # ----------------------------- Dashboard Permissions ------------------------ #
+    
+    def get_dashboard_permissions(self, uid):
+        return self.get(f'/api/dashboards/uid/{uid}/permissions')
+    
+    def update_dashboard_permissions(self, uid, payload):
+        return self.post(f'/api/dashboards/uid/{uid}/permissions', items=json.dumps({'items': payload}))
+    
+    # --------------------------------- Playlists -------------------------------- #
 
-    def apply_dashboards(self, items, **kw):
-        return self._apply(
-            'dashboards', items,
-            dump_fn=self.dump_dashboards,
-            create_fn=self.create_dashboard,
-            update_fn=self.create_dashboard,
-            delete_fn=self.delete_dashboard,
-            **kw,
-        )
+    def search_playlists(self):
+        return self.get('/api/playlists')
+    
+    def get_playlist(self, uid):
+        return self.get(f'/api/playlists/{uid}')
+    
+    def get_playlist_items(self, uid):
+        return self.get(f'/api/playlists/{uid}/items')
+    
+    def create_playlist(self, payload):
+        return self.post('/api/playlists', payload)
+    
+    def delete_playlist_by_uid(self, uid):
+        return self.delete(f'/api/playlists/{uid}')
+    
+    def delete_playlist(self, payload):
+        return self.delete_playlist_by_uid(payload['uid'])
 
     #endregion
     #region -------------------------- Datasources ------------------------------- #
@@ -293,7 +255,7 @@ class API:
     def get_datasource(self, uid):
         return self.get(f'/api/datasources/uid/{uid}')
     
-    def create_datasource(self, payload, fname=None):
+    def create_datasource(self, payload):
         # del payload['id']
         uid = payload['uid']
         try:
@@ -310,39 +272,30 @@ class API:
         return self.delete(f'/api/datasources/{id_}')
     
     def delete_datasource(self, payload):
-        return self.delete_datasource_by_uid(payload['uid'])
-    
-    # export/apply interface
-    
-    def dump_datasources(self, include_readonly=False):
-        payloads = self.search_datasources()
-        for d in payloads:
-            if not include_readonly and d.get('readOnly'):
-                continue
-            yield f"{d['name']}-{d['uid']}", d
-
-    def apply_datasources(self, items, **kw):
-        return self._apply(
-            'datasources', items,
-            dump_fn=self.dump_datasources,
-            create_fn=self.create_datasource,
-            update_fn=self.create_datasource,
-            delete_fn=self.delete_datasource,
-            **kw,
-        )
+        if 'uid' in payload:
+            return self.delete_datasource_by_uid(payload['uid'])
+        return self.delete_datasource_by_id(payload['id'])
 
     #endregion
     #region ---------------------------- Folders --------------------------------- #
 
+    _folders = None
+    @property
+    def folders(self):
+        if self._folders is None:
+            self._folders = self.search_folders()
+        return self._folders
+
     def search_folders(self, query=None, **params):
-        if query:
-            params['query'] = query
-        return self.get('/api/search/?type=dash-folder', params=params)
+        x = self.search(query, type='dash-folder', **params)
+        if not params and not query:
+            self._folders = x
+        return x
 
     def get_folder(self, uid):
         return self.get(f'/api/folders/{uid}')
 
-    def create_folder(self, payload, fname=None):
+    def create_folder(self, payload):
         payload.pop('id', None)
         try:
             try:
@@ -373,46 +326,13 @@ class API:
     def update_folder_permissions(self, payload):
         return self.post(f'/api/folders/{payload[0]["uid"]}/permissions', items=json.dumps({'items': payload}))
 
-    def dump_folders(self):
-        payloads = self.search_folders()
-        for d in payloads:
-            d = self.get_folder(d['uid'])
-            title = d['title'].replace('/', '-')
-            yield f"{title}-{d['uid']}", d
-
-    def dump_folder_permissions(self):
-        payloads = self.search_folders()
-        for d in payloads:
-            d = self.get_folder_permissions(d['uid'])
-            yield d.get('name', d.get('uid')), d
-
-    def apply_folders(self, items, **kw):
-        return self._apply(
-            'folders', items,
-            dump_fn=self.dump_folders,
-            create_fn=self.create_folder,
-            update_fn=self.update_folder,
-            delete_fn=self.delete_folder,
-            **kw,
-        )
-
-    def apply_folder_permissions(self, items, **kw):
-        return self._apply(
-            'folder_permissions', items,
-            dump_fn=self.dump_folder_permissions,
-            # create_fn=self.create_folder_permission,
-            # update_fn=self.create_folder_permission,
-            # delete_fn=self.delete_folder_permission,
-            **kw,
-        )
-
     #endregion
     #region ----------------------- Library elements ----------------------------- #
 
     def search_library_elements(self):
         return self.get('/api/library-elements?perPage=5000')['result']['elements']
 
-    def create_library_element(self, library_element, fname=None):
+    def create_library_element(self, library_element):
         folder_uid = library_element["meta"]["folderUid"]
         fd = self.get_folder(folder_uid)
         fd = fd[0] if isinstance(fd, list) else fd
@@ -424,29 +344,14 @@ class API:
     
     def delete_library_element(self, library_element):
         return self.delete_library_element_by_id(library_element['uid'])
-    
-    def dump_library_elements(self):
-        payloads = self.search_library_elements()
-        for d in payloads:
-            yield f"{d['name']}-{d['uid']}", d
 
-    def apply_library_elements(self, items, **kw):
-        return self._apply(
-            'library_elements', items,
-            dump_fn=self.dump_library_elements,
-            create_fn=self.create_library_element,
-            update_fn=self.create_library_element,
-            delete_fn=self.delete_library_element,
-            **kw,
-        )
-    
     #endregion
     #region -------------------------- Annotations ------------------------------- #
 
     def search_annotations(self, ts_from, ts_to):
         return self.get(f'/api/annotations?type=annotation&limit=5000&from={ts_from}&to={ts_to}')
 
-    def create_annotation(self, annotation, fname=None):
+    def create_annotation(self, annotation):
         return self.post('/api/annotations', annotation)
 
     def delete_annotation_by_id(self, id_):
@@ -454,31 +359,6 @@ class API:
     
     def delete_annotation(self, payload):
         return self.delete_annotation_by_id(payload['id'])
-    
-    def dump_annotations(self):
-        now = int(round(time.time() * 1000))
-        one_month_in_ms = 31 * 24 * 60 * 60 * 1000
-
-        ts_to = now
-        ts_from = now - one_month_in_ms
-        thirteen_months_retention = (now - (13 * one_month_in_ms))
-
-        while ts_from > thirteen_months_retention:
-            anns = self.search_annotations(ts_from, ts_to)
-            for d in anns:
-                yield f"{d['dashboardUID']}-{d['panelId']}-{d['time']}-{d['timeEnd']}", d
-            ts_to = ts_from
-            ts_from = ts_from - one_month_in_ms
-
-    def apply_annotations(self, items, **kw):
-        return self._apply(
-            'annotations', items,
-            dump_fn=self.dump_annotations,
-            create_fn=self.create_annotation,
-            update_fn=self.create_annotation,
-            delete_fn=self.delete_annotation,
-            **kw,
-        )
 
     #endregion
     #region ---------------------------- Alerts ---------------------------------- #
@@ -494,16 +374,21 @@ class API:
     
     #endregion
     #region -------------------------- Alert rules ------------------------------- #
+    # https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/#alert-rules
 
     def search_alert_rules(self):
         # if not self.compare_version('9.4.0'):
         #     return self.get('/api/ruler/grafana/api/v1/rules')
+        if not self.compare_version('9.4.0') or not self.basicauth:
+            return []
         return self.get('/api/v1/provisioning/alert-rules', basic=True)
 
-    def get_alert_rule(self, uid):
+    def get_alert_rule(self, uid, export=False):
+        if export:
+            return self.get(f'/api/v1/provisioning/alert-rules/{uid}/export', basic=True)
         return self.get(f'/api/v1/provisioning/alert-rules/{uid}', basic=True)
 
-    def create_alert_rule(self, alert, fname=None):
+    def create_alert_rule(self, alert):
         if not self.compare_version('9.4.0'):
             return
         del alert['id']
@@ -514,125 +399,119 @@ class API:
         except Exception:
             return self.post('/api/v1/provisioning/alert-rules', alert, basic=True)
 
+    def update_alert_rule(self, uid, alert):
+        return self.put(f'/api/v1/provisioning/alert-rules/{uid}', alert, basic=True)
+
     def delete_alert_rule_by_uid(self, uid):
         return self.delete(f'/api/v1/provisioning/alert-rules/{uid}', basic=True)
     
     def delete_alert_rule(self, payload):
         return self.delete_alert_rule_by_uid(payload['uid'])
 
-    def update_alert_rule(self, uid, alert):
-        return self.put(f'/api/v1/provisioning/alert-rules/{uid}', alert, basic=True)
-    
-    def dump_alert_rules(self):
-        if not self.compare_version('9.4.0') or not self.basicauth:
-            return
-        payloads = self.search_alert_rules()
-        for d in payloads:
-            yield d['uid'], d
-    
-    def apply_alert_rules(self, items, **kw):
-        return self._apply(
-            'alert_rules', items,
-            dump_fn=self.dump_alert_rules,
-            create_fn=self.create_alert_rule,
-            update_fn=self.create_alert_rule,
-            delete_fn=self.delete_alert_rule,
-            **kw,
-        )
+    #endregion
+    #region ------------------------ Alert rule groups --------------------------- #
+
+    def get_alert_rule_group(self, folderUid, group, export=False):
+        if export:
+            return self.get(f'/api/v1/provisioning/folder/{folderUid}/rule-groups/{group}/export')
+        return self.get(f'/api/v1/provisioning/folder/{folderUid}/rule-groups/{group}')
 
     #endregion
     #region ------------------------ Alert channels ------------------------------ #
 
-    def search_alert_channels(self):
+    def search_alert_notifications(self):
         return self.get('/api/alert-notifications')
 
-    def create_alert_channel(self, payload, fname=None):
+    def create_alert_notification(self, payload):
         return self.post('/api/alert-notifications', payload)
 
-    def delete_alert_channel_by_uid(self, uid):
+    def delete_alert_notification_by_uid(self, uid):
         return self.delete(f'/api/alert-notifications/uid/{uid}')
 
-    def delete_alert_channel_by_id(self, id_):
+    def delete_alert_notification_by_id(self, id_):
         return self.delete(f'/api/alert-notifications/{id_}')
     
-    def delete_alert_channel(self, payload):
-        return self.delete_alert_channel_by_uid(payload['uid'])
+    def delete_alert_notification(self, payload):
+        if 'uid' in payload:
+            return self.delete_alert_notification_by_uid(payload['uid'])
+        return self.delete_alert_notification_by_id(payload['id'])
 
-    def dump_alert_channels(self):
-        payloads = self.search_alert_channels()
-        for d in payloads:
-            yield d.get('uid', d['id']), d
+    search_alert_channels = search_alert_notifications
+    create_alert_channel = create_alert_notification
+    delete_alert_channel_by_uid = delete_alert_notification_by_uid
+    delete_alert_channel_by_id = delete_alert_notification_by_id
+    delete_alert_channel = delete_alert_notification
 
-    def apply_alert_channels(self, items, **kw):
-        return self._apply(
-            'alert_channels', items,
-            dump_fn=self.dump_alert_channels,
-            create_fn=self.create_alert_channel,
-            update_fn=self.create_alert_channel,
-            delete_fn=self.delete_alert_channel,
-            **kw,
-        )
+    #endregion
+    #region ----------------------- Notification templates ----------------------- #
+    # https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/#templates
+
+    def search_notification_templates(self):
+        return self.get('/api/v1/provisioning/templates')
+    
+    def get_notification_template(self, name):
+        return self.get(f'/api/v1/provisioning/templates/{name}')
+
+    def create_notification_template(self, payload):
+        return self.put(f"/api/v1/provisioning/templates/{payload['name']}", payload)
+    
+    def delete_notification_template(self, name):
+        return self.delete(f'/api/v1/provisioning/templates/{name}')
 
     #endregion
     #region ------------------------ Contact points ------------------------------ #
+    # https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/#contact-points
+
+    _contact_points = None
+    @property
+    def contact_points(self):
+        if self._contact_points is None:
+            self._contact_points = self.search_contact_points()
+        return self._contact_points
 
     def search_contact_points(self):
-        return self.get('/api/v1/provisioning/contact-points')
+        self._contact_points = x = self.get('/api/v1/provisioning/contact-points')
+        return x
+    
+    def get_contact_point(self, uid):
+        for cp in self.contact_points:
+            if cp['uid'] == uid:
+                return cp
+        raise RuntimeError(f"Could not find contact point with uid: {uid}")
 
-    def create_contact_point(self, payload, fname=None):
+    def create_contact_point(self, payload, fname=None, preserve_addresses=True):
         if not self.compare_version('9.4.0'):
             return
         try:
             uid = payload['uid']
             existing = self.get_contact_point(uid)
-            return self.update_contact_point(uid, payload)
+            if preserve_addresses:
+                if payload['type'] == 'email':
+                    log.info('Preserving email addresses for %s: \n  using: %s\n  instead of: %s', 
+                             uid, existing['settings']['addresses'], payload['settings']['addresses'])
+                    payload['settings']['addresses'] = existing['settings']['addresses']
+            return self.put(f'/api/v1/provisioning/contact-points/{uid}', payload)
+        except KeyError:
+            raise
         except Exception:
+            if preserve_addresses:
+                if payload['type'] == 'email':
+                    log.info('Droping email addresses for %s: %s', uid, payload['settings']['addresses'])
+                    payload['settings']['addresses'] = ""
             return self.post('/api/v1/provisioning/contact-points', payload)
 
-    def update_contact_point(self, uid, json_payload):
-        return self.put(f'/api/v1/provisioning/contact-points/{uid}', json_payload)
-    
-    def dump_contact_points(self):
-        payloads = self.search_contact_points()
-        for d in payloads:
-            yield f"{d['name']}-{d['uid']}", d
-
-    def apply_contact_points(self, items, **kw):
-        return self._apply(
-            'contact_points', items,
-            dump_fn=self.dump_contact_points,
-            create_fn=self.create_contact_point,
-            update_fn=self.create_contact_point,
-            # delete_fn=self.delete_contact_point,
-            **kw,
-        )
-    
     #endregion
     #region --------------------- Notification policies -------------------------- #
+    # https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/#notification-policies
 
     def search_notification_policies(self):
-        return self.get('/api/v1/provisioning/policies')
+        if not self.compare_version('9.4.0'):
+            return []
+        p = self.get('/api/v1/provisioning/policies')
+        return [p] if p else []
 
     def update_notification_policy(self, json_payload):
         return self.put('/api/v1/provisioning/policies', json_payload)
-    
-    def dump_notification_policies(self):
-        if not self.compare_version('9.4.0'):
-            return
-        d = self.search_notification_policies()
-        yield 'policies', d
-        # for d in payloads:
-        #     yield d.get('uid', d['id']), d
-
-    def apply_notification_policies(self, items, **kw):
-        return self._apply(
-            'notification_policies', items,
-            dump_fn=self.dump_notification_policies,
-            create_fn=self.create_notification_policy,
-            update_fn=self.create_notification_policy,
-            # delete_fn=self.delete_notification_policy,
-            **kw,
-        )
 
     #endregion
     #region --------------------------- Snapshots -------------------------------- #
@@ -643,7 +522,7 @@ class API:
     def get_snapshot(self, key):
         return self.get(f'/api/snapshots/{key}')
 
-    def create_snapshot(self, payload, fname=None):
+    def create_snapshot(self, payload):
         if 'name' not in payload:
             try:
                 payload['name'] = payload['dashboard']['title']
@@ -656,29 +535,29 @@ class API:
     
     # def delete_snapshot(self, payload):
     #     return self.delete_snapshot_by_key(payload['key'])
-    
-    def dump_snapshots(self):
-        payloads = self.search_snapshots()
-        for d1 in payloads:
-            name = d1['name']
-            d = self.get_snapshot(d1['key'])
-            # random_suffix = "".join(random.choice(string.ascii_letters) for _ in range(6))
-            yield f"{name}-{d1['created']}", d
 
-    def apply_snapshots(self, items, **kw):
-        return self._apply(
-            'snapshots', items,
-            dump_fn=self.dump_snapshots,
-            create_fn=self.create_snapshot,
-            update_fn=self.create_snapshot,
-            # delete_fn=self.delete_snapshot,
-            **kw,
-        )
+    #endregion
+    #region ------------------------- Mute Timings ------------------------------- #
+    # https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/#mute-timings
+
+    def search_mute_timings(self):
+        return self.get('/api/v1/provisioning/mute-timings')
+    
+    def get_mute_timing(self, name):
+        return self.get(f'/api/v1/provisioning/mute-timings/{name}')
+    
+    def create_mute_timing(self, payload):
+        return self.post('/api/v1/provisioning/mute-timings', payload)
+    
+    def delete_mute_timing(self, payload):
+        return self.delete(f'/api/v1/provisioning/mute-timings/{payload["name"]}')
 
     #endregion
     #region ----------------------------- Users ---------------------------------- #
 
     def search_users(self, page=0, limit=5000):
+        if not self.basicauth:
+            return []
         return self.get(f'/api/users?perpage={limit}&page={page}', basic=True)
 
     def get_users(self):
@@ -687,7 +566,7 @@ class API:
     def get_user(self, id):
         return self.get(f'/api/users/{id}', basic=True)
 
-    def create_user(self, payload, fname=None):
+    def create_user(self, payload):
         user = self.post('/api/admin/users', payload)
         for org in payload.get('orgs', []):
             self.post(f'/api/orgs/{org["orgId"]}/users', {
@@ -712,25 +591,6 @@ class API:
 
     def get_user_org(self, id):
         return self.get(f'/api/users/{id}/orgs', basic=True)
-    
-    def dump_users(self):
-        if not self.basicauth:
-            return
-        payloads = self.search_users()
-        for d in payloads:
-            d = self.get_user(d['id'])
-            d['orgs'] = self.get_user_org(d['id'])
-            yield d['login'], d
-
-    def apply_users(self, items, **kw):
-        return self._apply(
-            'users', items,
-            dump_fn=self.dump_users,
-            create_fn=self.create_user,
-            update_fn=self.create_user,
-            # delete_fn=self.delete_user,
-            **kw,
-        )
 
     #endregion
     #region ----------------------------- Teams ---------------------------------- #
@@ -741,10 +601,7 @@ class API:
     def get_team(self, id_):
         return self.get(f'/api/teams/{id_}')
 
-    def search_team_members(self, team_id):
-        return self.get(f'/api/teams/{team_id}/members')
-
-    def create_team(self, payload, fname=None):
+    def create_team(self, payload):
         uid = payload['id']
         try:
             # existing = self.get_team(uid)
@@ -757,6 +614,9 @@ class API:
     def delete_team(self, id_):
         return self.delete(f'/api/teams/{id_}')
 
+    def search_team_members(self, team_id):
+        return self.get(f'/api/teams/{team_id}/members')
+
     def create_team_member(self, user, team_id):
         return self.post(f'/api/teams/{team_id}/members', {
             'userId': self.get_user_by_login(user['email'], user['name'])
@@ -764,49 +624,19 @@ class API:
 
     def delete_team_member(self, user_id, team_id):
         return self.delete(f'/api/teams/{team_id}/members/{user_id}')
-    
-    def dump_teams(self):
-        payloads = self.search_teams()
-        for d in payloads:
-            d = self.get_team(d['id'])
-            yield d['name'], d
-
-    def dump_team_members(self):
-        payloads = self.search_teams()
-        for t in payloads:
-            for d in self.search_team_members(t['id']):
-                yield f"{d['teamId']}_{d['login']}", d
-        
-    def apply_teams(self, items, **kw):
-        return self._apply(
-            'teams', items,
-            dump_fn=self.dump_teams,
-            create_fn=self.create_team,
-            update_fn=self.create_team,
-            delete_fn=self.delete_team,
-            **kw,
-        )
-    
-    def apply_team_members(self, items, **kw):
-        return self._apply(
-            'team_members', items,
-            dump_fn=self.dump_team_members,
-            create_fn=self.create_team_member,
-            update_fn=self.create_team_member,
-            delete_fn=self.delete_team_member,
-            **kw,
-        )
 
     #endregion
     #region ----------------------------- Orgs ----------------------------------- #
 
     def search_orgs(self):
+        if not self.basicauth:
+            return []
         return self.get('/api/orgs', basic=True)
 
     def get_org(self, id):
         return self.get(f'/api/orgs/{id}', basic=True)
 
-    def create_org(self, payload, fname=None):
+    def create_org(self, payload):
         try:
             # del payload['id']
             uid = payload['id']
@@ -818,24 +648,6 @@ class API:
     def update_org(self, id, payload):
         return self.put(f'/api/orgs/{id}', payload, basic=True)
     
-    def dump_orgs(self):
-        if not self.basicauth:
-            return
-        payloads = self.search_orgs()
-        for d in payloads:
-            d = self.get_org(d['id'])
-            yield d['name'], d
-
-    def apply_orgs(self, items, **kw):
-        return self._apply(
-            'orgs', items,
-            dump_fn=self.dump_orgs,
-            create_fn=self.create_org,
-            update_fn=self.create_org,
-            # delete_fn=self.delete_org,
-            **kw,
-        )
-
     #endregion
     #region ---------------------------- Plugins --------------------------------- #
     # https://github.com/grafana/grafana/blob/f761ae1f026a45210b82bf7c531ff3c80dbbab36/pkg/api/api.go#L385
@@ -846,7 +658,7 @@ class API:
     def get_plugin(self, name):
         return self.get(f'/api/plugins/{name}/settings', basic=True)
     
-    def create_plugin(self, payload, fname=None):
+    def create_plugin(self, payload):
         uid = payload['id']
         try:
             existing = self.get_plugin(uid)
@@ -871,98 +683,10 @@ class API:
     def uninstall_plugin(self, name):
         return self.post(f'/api/plugins/{name}/uninstall', basic=True)
 
-    def dump_plugins(self):
-        payloads = self.get_plugins()
-        for d in payloads:
-            yield f"{d['id']}", d
-    
-    def apply_plugins(self, items, **kw):
-        return self._apply(
-            'plugins', items,
-            dump_fn=self.dump_plugins,
-            create_fn=self.create_plugin,
-            update_fn=self.create_plugin,
-            # delete_fn=self.delete_plugin,
-            **kw,
-        )
+    #endregion
+    #region ---------------------- Dashboard Versions ------------------------------ #
 
     #endregion
-    #region ------------------------ Export / Apply ------------------------------ #
-
-    def _apply(self, route, items: dict, dump_fn, create_fn, update_fn, delete_fn=None, existing=None, allow_delete=False, dry_run=False):
-        existing = dict(dump_fn()) if existing is None else existing
-
-        # check for new
-        new = set(items) - set(existing)
-        log.debug(f'new {route} {new}')
-        if new:
-            log.info(f"🌱 Creating {route}: {new}")
-            if not dry_run:
-                for k in new:
-                    create_fn(items[k])
-
-        # check for changes
-        in_common = set(items) & set(existing)
-        diffs = {k: dict_diff(existing[k], items[k]) for k in in_common}
-        update = {k for k in in_common if any(diffs[k])}
-        unchanged = in_common - update
-        # log.debug(f'diffs {route} {diffs}')
-        # log.debug(f'update {route} {update}')
-
-        if update:
-            log.info(f"🔧 Updating {route}: {update}")
-            if not dry_run:
-                for k in update:
-                    newver = items[k].get('version')
-                    oldver = existing[k].get('version')
-                    if newver is not None and oldver is not None and newver < oldver:
-                        # log.warning(f"{route} {k} version {newver} < {oldver} currently deployed. Skipping.")
-                        # continue
-                        items[k]['version'] = oldver
-                    update_fn(items[k])
-        
-        # check for deleted
-        missing = set(existing) - set(items)
-        delete = missing if allow_delete and delete_fn is not None else set()
-        log.debug(f'missing {route} {missing}')
-        log.debug(f'delete {route} {delete}')
-        if delete:
-            log.warning(f"🗑 Deleting {route}: {delete}")
-            if not dry_run:
-                for k in delete:
-                    delete_fn(existing[k])
-        elif missing:
-            log.warning(f"Missing (skipping delete) {route}: {missing}")
-
-        # summary
-        log.info(
-            "%s%-16s :: %s. %s. %s. %s.", 
-            "[Dry Run]" if dry_run else "",
-            route.strip('/').replace('/', '|').title(),
-            status_text('new', i=len(new)), 
-            status_text('modified', i=len(update)), 
-            status_text('deleted' if allow_delete else 'additional', i=len(delete)),
-            status_text('unchanged', i=len(unchanged)),
-        )
-        return new, update, delete, unchanged
-
-
-    def export(self, folder_path=DEFAULT_FOLDER_PATH, deleted_dir=None, allowed=None, exclude=None, dry_run=False):
-        allowed = (allowed.split(',') if isinstance(allowed, str) else allowed) or list(self.backup_functions)
-        if exclude:
-            allowed = [k for k in allowed if k not in exclude]
-        for group in allowed:
-            export_dir(dict(self.backup_functions[group]()), folder_path, group, deleted_dir=deleted_dir, dry_run=dry_run)
-
-    def apply(self, folder_path=DEFAULT_FOLDER_PATH, allowed=None, exclude=None, allow_delete=False, dry_run=False):
-        allowed = (allowed.split(',') if isinstance(allowed, str) else allowed) or list(self.restore_functions)
-        if exclude:
-            allowed = [k for k in allowed if k not in exclude]
-        for group in allowed:
-            self.restore_functions[group](load_dir(os.path.join(folder_path, group)), allow_delete=allow_delete, dry_run=dry_run)
-
-    #endregion
-
 
 
 def cli():
