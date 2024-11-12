@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import re
-import tqdm
+# import tqdm
 import json
 import base64
 import logging
