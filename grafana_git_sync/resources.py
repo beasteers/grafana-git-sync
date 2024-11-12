@@ -1157,8 +1157,8 @@ class Annotation(Resource):
 
 
 
-import ipdb
-@ipdb.iex
+# import ipdb
+# @ipdb.iex
 def cli():
     import logging
     logging.basicConfig()
