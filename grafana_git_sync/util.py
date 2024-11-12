@@ -271,14 +271,14 @@ def norm_cm_key(name):
 def indent(text, spaces=4):
     return '\n'.join(' '*spaces + l for l in text.splitlines())
 
-def symbol_block(txt='', color=None, *, indent=0, maxlen=None, top_border=False):
+def symbol_block(txt='', color=None, *, indent=0, maxlen=None, top_border=False, right=False):
     lines = ''
     s = SYMBOLS.get(color, '|')
     txt = txt.splitlines() if txt else []
     for i, l in enumerate(txt):
         # '┌' if len(txt) > 1 else s
         ii = s+' '*(indent+1) if i or not top_border else s+'─'*(indent+1)
-        lines += f"{color_text(color, ii)}{_truncate(l, maxlen)}\n"
+        lines += f"{color_text(color, ii)}{_truncate(l, maxlen)}{color_text(color, ii[::-1]) if right else ''}\n"
     return lines
 
 def _truncate(txt, maxlen):
@@ -316,6 +316,8 @@ def status_text(status, fmt=None, i=True, icon=None):
 
 
 def str_diff(old, new):
+    if old == new:
+        return ""
     result = ""
     codes = difflib.SequenceMatcher(a=old, b=new).get_opcodes()
     for code in codes:

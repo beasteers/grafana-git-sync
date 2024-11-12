@@ -108,10 +108,10 @@ class Resources:
         """Diff the resources on disk with the resources from the API."""
         self.get_diff(key, path, **kw)
 
-    def apply(self, path=EXPORT_DIR, allow_delete=False, dry_run=False):
+    def apply(self, key=None, path=EXPORT_DIR, allow_delete=False, dry_run=False):
         """Apply the resources to the API."""
-        diffs = self.get_diff(path)
-        for r in self.resources():
+        diffs = self.get_diff(key, path)
+        for r in self.resources(key):
             r.apply_diff(*diffs[r.GROUP], allow_delete=allow_delete, dry_run=dry_run)
 
     def export(self, resource=None, *, path=EXPORT_DIR, filter=None, **kw):
@@ -149,7 +149,7 @@ class Resource:
     ORDER_BY = None
     ORDER_DESC = True
     DIFF_IGNORE_KEYS = ('created', 'updated', 'createdBy', 'updatedBy', 'version', 'id')
-    EXT = 'yaml'
+    EXT = 'json'
 
     def __init__(self, api):
         self.api = api
@@ -265,24 +265,32 @@ class Resource:
         return new, update, missing, unchanged, items, existing
 
     def apply_diff(self, new, update, missing, unchanged, items, existing, allow_delete=False, dry_run=False):
+        log.info(self.simple_diff(new, update, missing, unchanged))
         if new:
-            log.info(util.status_text("new", "Creating"), ', '.join(self.get_title(d) for d in new))
             if not dry_run:
                 for k in tqdm.tqdm(new, desc="Creating", leave=False):
+                    log.info("Creating %s", self.get_title(items[k]))
                     self.create(items[k])
         if update:
-            log.info(util.status_text("modified", "Updating"), ', '.join(self.get_title(d) for d in update))
             if not dry_run:
                 for k in tqdm.tqdm(update, desc="Updating", leave=False):
+                    # if existing[k]['dashboard'].get('title') != 'Event Labeling':
+                    #     continue
+                    # print("Updating", self.get_title(items[k]))
+                    # continue
+                    log.info("Updating %s", self.get_title(items[k]))
                     self.update(items[k], existing[k])
         if missing:
             if allow_delete:
-                log.info(util.status_text("deleted", "Deleting"), ', '.join(self.get_title(d) for d in missing))
                 if not dry_run:
                     for k in tqdm.tqdm(missing, desc="Deleting", leave=False):
+                        log.warning("Deleting %s", self.get_title(existing[k]))
                         self.delete(existing[k])
             else:
-                log.info(util.status_text("deleted", "Additional items"), ', '.join(self.get_title(d) for d in missing))
+                # log.info(util.status_text("deleted", "Additional items"), ', '.join(self.get_title(existing[k]) for k in missing))
+                for k in missing:
+                    log.warning("Ignoring %s", self.get_title(existing[k]))
+                log.warning("Use --allow-delete to delete items.")
 
     def wipe(self, yes=None, dry_run=False):
         import tempfile
@@ -311,6 +319,17 @@ class Resource:
 
     def diff_str(self, new, update, missing, unchanged, items, existing, *, title=None, allow_delete=False, show_no_changes=True):
         """Get the diff as a string."""
+
+        '''
+        diff_str:
+         - _diff_items: Dashboards - unchanged, new, modified, deleted
+            - _diff_item_block: Dashboard
+                - _diff_item_block(_diff_item_text): title
+                    - _diff_item_block(_diff_item_value): Properties - unchanged, new, modified, deleted
+                        - _diff_item_format_value
+                    - ...
+            - ...
+        '''
 
         # title
         lines = util.color_text('bold', title or self.GROUP.title()) + '\n'
@@ -743,6 +762,8 @@ class DashboardVersion(Resource):
     def _process(self, versions, d):
         for v in versions:
             v.pop('data', None)
+        print(versions)
+        # print(d)
         return {
             'uid': d['uid'],
             'title': d['title'],
@@ -761,18 +782,51 @@ class DashboardVersion(Resource):
             diff_text = {
                 **{a: self._diff_item_block('unchanged', self._prange(a,b, "✓"), self._pdate(p2[a]['created'], p2[b]['created'])) 
                       for a,b in self._contiguous_ranges(unchanged)},
-                **{a: self._diff_item_block('new', self._prange(a,b,"B"), self._pdate(p2[a]['created'], p2[b]['created']))
+                # **{a: self._diff_item_block('new', self._prange(a,b,"B"), self._pdate(p2[a]['created'], p2[b]['created']))
+                #       for a,b in self._contiguous_ranges(k for k, in m1)},
+                **{a: self._diff_item_block('new', " "*8, self._pdate(p2[a]['created'], p2[b]['created']) + " " + util.color_text('new', self._prange(a,b,"B", right=True)), right=True)
                       for a,b in self._contiguous_ranges(k for k, in m1)},
                 # **{k: self._diff_item_block('modified', f'┌{f" {k} A":->7}', f"{util.color_text('red' if newer[k] else 'green', self._pdate(p1[k]['created']))} {p1[k]['message']}") + 
                 #       self._diff_item_block('modified', f'└{f" B":->7}', f"{util.color_text('green' if newer[k] else 'red', self._pdate(p2[k]['created']))} {p2[k]['message']}") 
                 #       for k, in mm},
+                # **{a: ''.join(
+                #         self._diff_item_block(
+                #             'modified',
+                #             # outer border
+                #             f"{('┌' if k==a and not (a==b and i) else '└' if k==b else '│')}"
+                #             # number/symbol
+                #             f'{f" {k} {AB}":{" " if a<k and i==0 or k<b and i==1 else "─"}>7}', 
+                #             # date and version message
+                #             f"{util.color_text('green' if newer[k]==c else 'red', self._pdate(p[k]['created']))} {p[k]['message']}")
+                #         for i, (p, c, AB) in enumerate(((p1,False,'A'), (p2,True,'B')))
+                #         for k in range(a, b+1)
+                #       )
+                #       for a,b in self._contiguous_ranges(k for k, in mm)},
                 **{a: ''.join(
                         self._diff_item_block(
                             'modified',
-                            f"{('┌' if k==a and not (a==b and i) else '└' if k==b else '│')}"
-                            f'{f" {k} {AB}":{" " if a<k and i==0 or k<b and i==1 else "─"}>7}', 
-                            f"{util.color_text('green' if newer[k]==c else 'red', self._pdate(p[k]['created']))} {p[k]['message']}")
-                        for i, (p, c, AB) in enumerate(((p1,False,'A'), (p2,True,'B')))
+                            "",
+                            util.color_text('modified', 
+                                # outer border
+                                f"{('┌' if k==a else '└' if k==b else '│')}"
+                                # number/symbol
+                                f'{f" {k} A":{" " if a<k else "─"}>7}'                
+                            ) + 
+                            # date and version message
+                            f" {util.color_text('green' if not newer[k] else 'red', self._pdate(p1[k]['created']))} "
+                            f" {util.color_text('green' if newer[k] else 'red', self._pdate(p2[k]['created']))} "
+                            + util.color_text('modified', 
+                                # number/symbol
+                                f' {f"B {k} ":{" " if a<k else "─"}<7}'                
+                                # outer border
+                                f"{('┐' if k==a else '┘' if k==b else '│')}"
+                            ) + (
+                                (f"\n{p1[k]['message']}" if p1[k]['message'] else "") + 
+                                (f"\n{p2[k]['message']}" if p2[k]['message'] else "")
+                            ),
+                            right=True
+                        )
+                        # for i, (p, c, AB) in enumerate(((p1,False,'A'), (p2,True,'B')))
                         for k in range(a, b+1)
                       )
                       for a,b in self._contiguous_ranges(k for k, in mm)},
@@ -784,14 +838,18 @@ class DashboardVersion(Resource):
             return txt
         return super()._diff_item_value(kind, kind_label, keys, item, other)
     
-    def _prange(self, a, b, lbl=''):
+    def _prange(self, a, b, lbl='', right=False):
         r = f"{a}-{b}" if b is not None and a != b else f"{a}"
-        return f"""{f'{r} {lbl or " "}': >8}"""
+        return (
+            f"""{f'{lbl or " "} {r}': <8}"""
+            if right else
+            f"""{f'{r} {lbl or " "}': >8}"""
+        )
     
     def _pdate(self, a, b=None):
         a = datetime.strptime(a, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M')
         b = datetime.strptime(b, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M') if b else ''
-        r = f"({a} - {b})" if b and a != b else f" {a}"
+        r = f" {a} - {b} " if b and a != b else f" {a}"
         return r
 
     def _contiguous_ranges(self, xs):
@@ -887,12 +945,13 @@ class ContactPoint(Resource):
 class NotificationPolicy(Resource):
     GROUP = 'notification_policies'
     TITLE = ID = None
+    EXT = 'yaml'
 
     def get_fname(self, d):
         return "policies"
 
     def create(self, d):
-        return self.api.create_notification_policy(d)
+        return self.api.update_notification_policy(d)
     
     # def delete(self, d):
     #     return self.api.delete_notification_policy(d)
@@ -905,6 +964,7 @@ class NotificationTemplate(Resource):
     GROUP = 'notification_templates'
     TITLE = 'name'
     ID = 'name'
+    EXT = 'yaml'
 
     def create(self, d):
         return self.api.create_notification_template(d)

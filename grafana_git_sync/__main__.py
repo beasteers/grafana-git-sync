@@ -1,3 +1,3 @@
-from .resources import main
+from .resources import cli
 
-main()
+cli()

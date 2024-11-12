@@ -29,7 +29,7 @@ class API:
 
     #region --------------------------- Requests --------------------------------- #
 
-    def _req(self, method, path, basic=False, params=None, org=None, disable_provanance=False, **kw):
+    def _req(self, method, path, basic=False, params=None, org=None, provenance=True, **kw):
         log.debug('%s: %s', method, path)
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = dict(self.headers)
@@ -40,7 +40,7 @@ class API:
         org = org or self.org
         if org:
             headers['X-Grafana-Org-Id'] = org
-        if disable_provanance:
+        if not provenance:
             headers['X-Disable-Provenance'] = 'true'
         response = requests.request(method, f"{self.url}{path}", headers=headers, params=params, **kw)
         # log.debug('%s', response.status_code)
@@ -167,6 +167,19 @@ class API:
 
     def search_dashboards(self, query=None, **params):
         return self.search(query=query, type='dash-db', **params)
+
+    def create_dashboard(self, payload, fname=None):
+        try:
+            return self.post('/api/dashboards/db', {
+                "dashboard": payload['dashboard'],
+                "folderUid": payload.get('folderUid') or payload.get('meta', {}).get('folderUid', ''),
+                "overwrite": True,
+            })
+        except requests.HTTPError as e:
+            if e.response.json().get('message') == 'Cannot save provisioned dashboard':
+                log.warning(e.response.content)
+                return
+            raise
 
     def get_dashboard(self, uid):
         return self.get(f'/api/dashboards/uid/{uid}')
@@ -388,19 +401,23 @@ class API:
             return self.get(f'/api/v1/provisioning/alert-rules/{uid}/export', basic=True)
         return self.get(f'/api/v1/provisioning/alert-rules/{uid}', basic=True)
 
-    def create_alert_rule(self, alert):
+    def create_alert_rule(self, alert, provenance=False):
         if not self.compare_version('9.4.0'):
             return
         del alert['id']
         uid = alert['uid']
         try:
             existing = self.get_alert_rule(uid)
-            return self.update_alert_rule(uid, alert)
-        except Exception:
-            return self.post('/api/v1/provisioning/alert-rules', alert, basic=True)
+            try:
+                return self.update_alert_rule(uid, alert)
+            except Exception as e:
+                self.delete_alert_rule_by_uid(uid)
+                raise
+        except Exception as e:
+            return self.post('/api/v1/provisioning/alert-rules', alert, basic=True, provenance=provenance)
 
-    def update_alert_rule(self, uid, alert):
-        return self.put(f'/api/v1/provisioning/alert-rules/{uid}', alert, basic=True)
+    def update_alert_rule(self, uid, alert, provenance=False):
+        return self.put(f'/api/v1/provisioning/alert-rules/{uid}', alert, basic=True, provenance=provenance)
 
     def delete_alert_rule_by_uid(self, uid):
         return self.delete(f'/api/v1/provisioning/alert-rules/{uid}', basic=True)
@@ -452,11 +469,18 @@ class API:
     def get_notification_template(self, name):
         return self.get(f'/api/v1/provisioning/templates/{name}')
 
-    def create_notification_template(self, payload):
-        return self.put(f"/api/v1/provisioning/templates/{payload['name']}", payload)
+    def create_notification_template(self, payload, provenance=False):
+        try:
+            return self.put(f"/api/v1/provisioning/templates/{payload['name']}", payload, provenance=provenance)
+        except Exception as e:
+            self.delete_notification_template_by_name(payload['name'])
+            return self.put(f"/api/v1/provisioning/templates/{payload['name']}", payload, provenance=provenance)
     
-    def delete_notification_template(self, name):
+    def delete_notification_template_by_name(self, name):
         return self.delete(f'/api/v1/provisioning/templates/{name}')
+
+    def delete_notification_template(self, payload):
+        return self.delete_notification_template_by_name(payload['name'])
 
     #endregion
     #region ------------------------ Contact points ------------------------------ #
@@ -479,7 +503,7 @@ class API:
                 return cp
         raise RuntimeError(f"Could not find contact point with uid: {uid}")
 
-    def create_contact_point(self, payload, fname=None, preserve_addresses=True):
+    def create_contact_point(self, payload, fname=None, preserve_addresses=True, provenance=False):
         if not self.compare_version('9.4.0'):
             return
         try:
@@ -490,15 +514,28 @@ class API:
                     log.info('Preserving email addresses for %s: \n  using: %s\n  instead of: %s', 
                              uid, existing['settings']['addresses'], payload['settings']['addresses'])
                     payload['settings']['addresses'] = existing['settings']['addresses']
-            return self.put(f'/api/v1/provisioning/contact-points/{uid}', payload)
+            try:
+                return self.put(f'/api/v1/provisioning/contact-points/{uid}', payload, provenance=provenance)
+            except Exception as e:
+                notification_policy = self.get_notification_policy()
+                self.delete_notification_policy()
+                self.delete_contact_point_by_uid(uid)
+                self.update_notification_policy(notification_policy)
+                raise
         except KeyError:
             raise
         except Exception:
             if preserve_addresses:
                 if payload['type'] == 'email':
-                    log.info('Droping email addresses for %s: %s', uid, payload['settings']['addresses'])
-                    payload['settings']['addresses'] = ""
-            return self.post('/api/v1/provisioning/contact-points', payload)
+                    log.info('Dropping email addresses for %s: %s', uid, payload['settings']['addresses'])
+                    payload['settings']['addresses'] = " "
+            return self.post('/api/v1/provisioning/contact-points', payload, provenance=provenance)
+
+    def delete_contact_point_by_uid(self, uid):
+        return self.delete(f'/api/v1/provisioning/contact-points/{uid}')
+
+    def delete_contact_point(self, payload):
+        return self.delete_contact_point_by_uid(payload['uid'])
 
     #endregion
     #region --------------------- Notification policies -------------------------- #
@@ -510,8 +547,16 @@ class API:
         p = self.get('/api/v1/provisioning/policies')
         return [p] if p else []
 
-    def update_notification_policy(self, json_payload):
-        return self.put('/api/v1/provisioning/policies', json_payload)
+    def get_notification_policy(self, export=False):
+        if export:
+            return self.get('/api/v1/provisioning/policies/export')
+        return self.get('/api/v1/provisioning/policies')
+
+    def update_notification_policy(self, json_payload, provenance=False):
+        return self.put('/api/v1/provisioning/policies', json_payload, provenance=provenance)
+
+    def delete_notification_policy(self):
+        return self.delete('/api/v1/provisioning/policies')
 
     #endregion
     #region --------------------------- Snapshots -------------------------------- #
