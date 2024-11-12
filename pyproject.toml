@@ -3,7 +3,7 @@ name = "grafana_git_sync"
 description = "import/export from grafana"
 version = "0.0.1"
 authors = [{ name = "Bea Steers", email = "bea.steers@gmail.com" }]
-dependencies = ["requests", "ruamel.yaml", "fire", "tqdm"]
+dependencies = ["requests", "packaging", "ruamel.yaml", "fire", "tqdm"]
 
 [project.scripts]
 grafana-git-sync = "grafana_git_sync.resources:cli"
