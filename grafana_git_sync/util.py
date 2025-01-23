@@ -15,6 +15,21 @@ log = logging.getLogger(__name__.split('.')[0])
 EXT = 'yaml'
 yaml=ruamel.yaml.YAML(typ='rt')
 
+CACHE_DIR = os.path.join(os.path.dirname(__file__), '.cache')
+
+def disk_cache_fn_json(fn, *args, key=None, cache_dir=CACHE_DIR, **kwargs):
+    '''Cache the results of a function to disk as json'''
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f'{key or fn.__name__}.json')
+    if os.path.isfile(cache_file):
+        with open(cache_file, 'r') as f:
+            return json.load(f)
+    result = fn(*args, **kwargs)
+    with open(cache_file, 'w') as f:
+        json.dump(result, f)
+    return result
+
+
 def confirm(*questions, default_yes=False, bye="Okie bye <3"):
     for q in questions:
         if (
@@ -89,9 +104,13 @@ def export_dir(data, out_dir, name, ext=EXT, delete=True, deleted_dir=None, dry_
             ),
         )
 
-def _get_file_list(src_dir):
+def _get_file_list(src_dir, exts=None, ignored_dirs=['.trash']):
     fs = glob.glob(os.path.join(src_dir, '**/*'), recursive=True)
-    return [f for f in fs if os.path.isfile(f)]
+    return [
+        f for f in fs if os.path.isfile(f) and 
+        (exts is None or os.path.splitext(f)[1].lstrip('.') in exts) and
+        (ignored_dirs is None or not any(d in f.split(os.sep) for d in ignored_dirs))
+    ]
 
 def _path_to_stem(path, rel_dir):
     return os.path.splitext(os.path.relpath(path, rel_dir))[0]

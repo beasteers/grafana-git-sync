@@ -94,14 +94,15 @@ class Resources:
     def login(self, username, password):
         return self.api.login(username, password)
 
-    def get_diff(self, key=None, path=EXPORT_DIR, **kw):
+    def get_diff(self, key=None, path=EXPORT_DIR, print_diff=True, **kw):
         diffs = {}
-        for r in self.resources(key):
+        resources = self.resources(key)
+        for r in resources:
             diffs[r.GROUP] = r.diff(path, **kw)
-        for r in self.resources(key):
-            s = r.diff_str(*diffs[r.GROUP])
-            if s:
-                print(s)
+            if print_diff:
+                s = r.diff_str(*diffs[r.GROUP])
+                if s:
+                    print(s)
         return diffs
     
     def diff(self, key=None, path=EXPORT_DIR, **kw):
@@ -262,6 +263,7 @@ class Resource:
         diffs = {k: self.diff_item(existing[k], items[k]) for k in in_common}
         update = {k: v for k, v in diffs.items() if v}
         unchanged = in_common - set(update)
+        print(missing)
         return new, update, missing, unchanged, items, existing
 
     def apply_diff(self, new, update, missing, unchanged, items, existing, allow_delete=False, dry_run=False):
@@ -384,12 +386,13 @@ class Resource:
         lines = util.indent(lines, 4) + '\n' if lines else ''
         return header + lines
     
-    def _diff_item_block(self, kind, label, value, **kw):
+    def _diff_item_block(self, kind, label, value, align_value=False, **kw):
         """Get the text to display for an item in a diff."""
+        l = label + " " if label else ""
         v = "" if value is None else value
-        v = '\n  '.join(str(v).split('\n'))
-        l = util.color_text(kind, label or '') + " " if label else ""
-        return util.symbol_block(f"{l}{v}", kind, **kw)
+        leading_spaces = len(l) - 1 if align_value else 2
+        v = ('\n' + " "*leading_spaces).join(str(v).split('\n'))
+        return util.symbol_block(f"{util.color_text(kind, label)}{v}", kind, **kw)
 
     def _diff_item_text(self, kind, kind_label, item, other, diff):
         """Get the text to display for the name of an item in a diff."""
@@ -780,7 +783,7 @@ class DashboardVersion(Resource):
             
             # get text for each version range
             diff_text = {
-                **{a: self._diff_item_block('unchanged', self._prange(a,b, "✓"), self._pdate(p2[a]['created'], p2[b]['created'])) 
+                **{a: self._diff_item_block('unchanged', self._prange(a,b, "✓"), self._pdate(p2[a]['created'], p2[b]['created'], center=True), align_value=True) 
                       for a,b in self._contiguous_ranges(unchanged)},
                 # **{a: self._diff_item_block('new', self._prange(a,b,"B"), self._pdate(p2[a]['created'], p2[b]['created']))
                 #       for a,b in self._contiguous_ranges(k for k, in m1)},
@@ -846,10 +849,15 @@ class DashboardVersion(Resource):
             f"""{f'{r} {lbl or " "}': >8}"""
         )
     
-    def _pdate(self, a, b=None):
+    def _pdate(self, a, b=None, center=False):
         a = datetime.strptime(a, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M')
         b = datetime.strptime(b, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M') if b else ''
-        r = f" {a} - {b} " if b and a != b else f" {a}"
+        if center:
+            a = f"         {a} "
+            b = f"       - {b} "
+            return f'{a}\n{b}'
+        else:
+            r = f" {a} - {b} " if b and a != b else f" {a}"
         return r
 
     def _contiguous_ranges(self, xs):

@@ -8,6 +8,8 @@ import logging
 import requests
 from packaging import version
 
+from . import USERNAME, PASSWORD, URL, API_KEY
+
 log = logging.getLogger(__name__.split('.')[0])
 # log.setLevel(logging.DEBUG)
 
@@ -15,7 +17,7 @@ ROOT_FOLDER = 'General'
 
 class API:
     '''Query tool for grafana.'''
-    def __init__(self, url, username=None, password=None, api_key=None):
+    def __init__(self, url=URL, username=USERNAME, password=PASSWORD, api_key=API_KEY):
         self.url = url
         self.headers = {"Content-type": "application/json"}
         self.api_key = api_key

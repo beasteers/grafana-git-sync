@@ -12,7 +12,11 @@ ENV_PREFIX = os.environ.get("GRAFANA_ENV") or "GRAFANA"
 URL = os.environ.get(ENV_PREFIX + "_URL") or "http://localhost:3000"
 USERNAME = os.environ.get(ENV_PREFIX + "_USER") or "admin"
 PASSWORD = os.environ.get(ENV_PREFIX + "_PASS") or "admin"
+API_KEY = os.environ.get(ENV_PREFIX + "_KEY")
 EXPORT_DIR = os.environ.get(ENV_PREFIX + "_PATH") or "grafana"
+
+# print(URL, USERNAME, API_KEY, EXPORT_DIR)
+# input()
 
 from . import util
 from .api import API
