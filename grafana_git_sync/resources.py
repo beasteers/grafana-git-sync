@@ -169,7 +169,7 @@ class Resource:
         """Get the identifier to save the resource to disk."""
         xs = [
             util.get_key(d, k, None) 
-            for k in self.FNAME_KEYS or {self.TITLE, self.ID}
+            for k in self.FNAME_KEYS or (self.TITLE,) + ((self.ID,) if self.ID != self.TITLE else ())
             if k
         ]
         return '-'.join([str(x) for x in xs if x is not None]).replace('/', '-')
@@ -498,7 +498,9 @@ class Dashboard(Resource):
 
     def get_fname(self, d):
         folder = (d.get('folderTitle') or d['meta'].get('folderTitle') or self.ROOT_FOLDER).replace('/', '-')
-        return f"{folder}/{d['dashboard']['title'].replace('/', '-')}-{d['dashboard']['uid']}"
+        title = d['dashboard']['title'].replace('/', '-')
+        uid = d['dashboard']['uid']
+        return f"{folder}/{title}-{uid}"
 
     def create(self, d):
         return self.api.create_dashboard(d)
@@ -763,9 +765,9 @@ class DashboardVersion(Resource):
         ]
     
     def _process(self, versions, d):
-        for v in versions:
-            v.pop('data', None)
-        print(versions)
+        # for v in versions:
+        #     v.pop('data', None)
+        # print(versions)
         # print(d)
         return {
             'uid': d['uid'],
