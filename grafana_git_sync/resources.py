@@ -1,12 +1,10 @@
 from collections import OrderedDict
-from datetime import datetime, timezone
 import fnmatch
 import os
-import math
 import time
 import tqdm
 import logging
-from grafana_git_sync import EXPORT_DIR, USERNAME, PASSWORD, URL
+from grafana_git_sync import EXPORT_DIR, USERNAME, PASSWORD, URL, diffs
 from . import util
 from .api import API
 from .util import load_dir, export_dir
@@ -151,9 +149,11 @@ class Resource:
     ORDER_DESC = True
     DIFF_IGNORE_KEYS = ('created', 'updated', 'createdBy', 'updatedBy', 'version', 'id')
     EXT = 'json'
+    DiffClass = diffs.ResourceDiff
 
     def __init__(self, api):
         self.api = api
+        self.diff_fmt = self.DiffClass(self)
 
     # ----------------------------------- Info ----------------------------------- #
 
@@ -188,16 +188,19 @@ class Resource:
     
     def diff_item(self, existing, item):
         """Compare items to see if they changed."""
-        missing1, missing2, mismatch = util.nested_dict_diff(existing, item, self.DIFF_IGNORE_KEYS)
-        return (missing1, missing2, mismatch) if missing1 or missing2 or mismatch else False
+        return self.diff_fmt.diff_item(existing, item)
+    # def diff_item(self, existing, item):
+    #     """Compare items to see if they changed."""
+    #     missing1, missing2, mismatch = util.nested_dict_diff(existing, item, self.DIFF_IGNORE_KEYS)
+    #     return (missing1, missing2, mismatch) if missing1 or missing2 or mismatch else False
 
     # ------------------------------------ API ----------------------------------- #
 
-    def create(self, d):
+    def create(self, d: dict):
         """Create a resource in the API."""
         raise NotImplemented
     
-    def update(self, d, existing):
+    def update(self, d: dict, existing: dict):
         """Update a resource in the API."""
         return self.create(d)
 
@@ -207,16 +210,16 @@ class Resource:
 
     # ----------------------------------- Load ----------------------------------- #
 
-    def _pull(self):
+    def _pull(self) -> list[dict]:
         raise NotImplemented
+    
+    def _load(self, folder_path: str) -> list[dict]:
+        ds = load_dir(os.path.join(folder_path, self.GROUP))
+        return list(ds.values())
 
     def pull(self, filter=None) -> list[dict]:
         """Dump the resource from the API."""
         return self._filter(self._pull(), filter)
-    
-    def _load(self, folder_path):
-        ds = load_dir(os.path.join(folder_path, self.GROUP))
-        return list(ds.values())
 
     def load(self, folder_path, filter=None) -> list[dict]:
         """Load the resource from disk."""
@@ -249,7 +252,7 @@ class Resource:
         items = self.load(folder_path, filter=filter)  # new items come from disk
         return self.get_diff(existing, items, inverse=inverse)
 
-    def get_diff(self, existing, items, inverse=False):
+    def get_diff(self, existing: list[dict], items: list[dict], inverse=False) -> tuple[set, set, set, set, dict, dict]:
         if inverse:  # flip the diff
             existing, items = items, existing
         # get items from disk and API
@@ -260,14 +263,14 @@ class Resource:
         new = set(items) - set(existing)
         missing = set(existing) - set(items)
         in_common = set(items) & set(existing)
-        diffs = {k: self.diff_item(existing[k], items[k]) for k in in_common}
+        diffs = {k: self.diff_fmt.diff_item(existing[k], items[k]) for k in in_common}
         update = {k: v for k, v in diffs.items() if v}
         unchanged = in_common - set(update)
         print(missing)
         return new, update, missing, unchanged, items, existing
 
-    def apply_diff(self, new, update, missing, unchanged, items, existing, allow_delete=False, dry_run=False):
-        log.info(self.simple_diff(new, update, missing, unchanged))
+    def apply_diff(self, new: set, update: set, missing: set, unchanged: set, items: dict, existing: dict, allow_delete=False, dry_run=False):
+        log.info(self.diff_fmt.simple_diff(new, update, missing, unchanged))
         if new:
             if not dry_run:
                 for k in tqdm.tqdm(new, desc="Creating", leave=False):
@@ -310,111 +313,8 @@ class Resource:
 
     # ----------------------------------- Print ---------------------------------- #
 
-    def simple_diff(self, new, update, missing, unchanged, items=None, existing=None, *, allow_delete=False):
-        """Simple diff: e.g. Dashboards :: 3 new. 2 modified. 1 deleted. 4 unchanged."""
-        return f"{self.GROUP.title(): >24} :: " + " ".join([f'{x}.' for x in [
-            util.status_text('new', i=len(new)), 
-            util.status_text('modified', i=len(update)), 
-            util.status_text('deleted' if allow_delete else 'trash', i=len(missing)),
-            util.status_text('unchanged', i=len(unchanged)),
-        ]])
-
-    def diff_str(self, new, update, missing, unchanged, items, existing, *, title=None, allow_delete=False, show_no_changes=True):
-        """Get the diff as a string."""
-
-        '''
-        diff_str:
-         - _diff_items: Dashboards - unchanged, new, modified, deleted
-            - _diff_item_block: Dashboard
-                - _diff_item_block(_diff_item_text): title
-                    - _diff_item_block(_diff_item_value): Properties - unchanged, new, modified, deleted
-                        - _diff_item_format_value
-                    - ...
-            - ...
-        '''
-
-        # title
-        lines = util.color_text('bold', title or self.GROUP.title()) + '\n'
-        if not new and not update and not missing:
-            if show_no_changes:
-                return lines.rstrip() + util.color_text('unchanged', " :: no changes.")
-            return ''
-
-        # unchanged items
-        lines += self._diff_items("unchanged", "unchanged", unchanged, items, existing, itemize=False)
-
-        # new items
-        lines += self._diff_items("new", "new", new, items)
-        
-        # modified items
-        update_k = {k: d if isinstance(d, str) else f"modified" for k, d in update.items()}
-        for k in set(update_k.values()):
-            update_ki = {d: update[d] for d, ki in update_k.items() if ki == k}
-            lines += self._diff_items("modified", k, update_ki, items, existing)
-        
-        # deleted items
-        lines += self._diff_items("deleted", "deleted" if allow_delete else "trash", missing, existing)
-        return lines
-
-    def _diff_items(self, kind, kind_label, keys, items, others=None, itemize=True):
-        """Diff a group of items in a category."""
-        if not keys:
-            return ''
-        header = f"{util.status_text(kind, kind_label, i=len(keys))}\n"
-        lines = ''
-        if itemize:
-            ks = sorted(keys, key=lambda k: util.get_key(items[k], self.ORDER_BY), reverse=self.ORDER_DESC) if self.ORDER_BY else keys
-            for d in ks:
-                item = items[d]
-                other = (others or {}).get(d)
-                diff = keys[d] if isinstance(keys, dict) else None
-                txt = self._diff_item_text(kind, kind_label, item, other, diff)
-                lines += self._diff_item_block(kind, '', txt, top_border=True)
-
-                if isinstance(diff, (tuple, list)):
-                    m1, m2, mm = diff
-                    for kind_i, ms, di, do in (
-                        ('new', m1, item, None), 
-                        ('modified', mm, item, other), 
-                        ('deleted', m2, other, None),
-                    ):
-                        for m in ms:
-                            v = self._diff_item_value(kind, kind_label, m, di, do)
-                            if v is not None:
-                                lines += self._diff_item_block(kind_i, '.'.join(m), v, indent=2)
-
-        lines = util.indent(lines, 4) + '\n' if lines else ''
-        return header + lines
-    
-    def _diff_item_block(self, kind, label, value, align_value=False, **kw):
-        """Get the text to display for an item in a diff."""
-        l = label + " " if label else ""
-        v = "" if value is None else value
-        leading_spaces = len(l) - 1 if align_value else 2
-        v = ('\n' + " "*leading_spaces).join(str(v).split('\n'))
-        return util.symbol_block(f"{util.color_text(kind, label)}{v}", kind, **kw)
-
-    def _diff_item_text(self, kind, kind_label, item, other, diff):
-        """Get the text to display for the name of an item in a diff."""
-        return util.color_text('bold', self.get_title(item))
-
-    def _diff_item_value(self, kind, kind_label, keys, item, other=None):
-        """Get the text to display for the value of an item attr in a diff."""
-        v = util.get_key(item, keys, None)
-        v1 = util.get_key(other, keys, None) if other is not None else None
-        return (
-            (f'[{kind_label or kind}]') 
-            if isinstance(v, (dict, list, tuple, set)) else 
-            (f"= {self._diff_item_format_value(v1, keys)} -> {self._diff_item_format_value(v, keys)}" 
-             if other is not None else 
-             f"= {self._diff_item_format_value(v, keys)}")
-        )
-    
-    def _diff_item_format_value(self, value, keys=None):
-        if isinstance(value, str) and value.strip():
-            return util.color_text('token', value)
-        return util.color_text('token', f"{value!r}")
-
+    def diff_str(self, new, update, missing, unchanged, items, existing, **kw):
+        return self.diff_fmt.diff_str(new, update, missing, unchanged, items, existing, **kw)
 
 
 
@@ -488,6 +388,7 @@ class Folder(Resource):
 
 
 class Dashboard(Resource):
+    DiffClass = diffs.DashboardDiff
     GROUP = 'dashboards'
     TITLE = 'dashboard.title'
     ID = 'dashboard.uid'
@@ -508,21 +409,21 @@ class Dashboard(Resource):
     def delete(self, d):
         return self.api.delete_dashboard(d)
     
-    def diff_item(self, existing, item):
-        newver = item.get('version')
-        oldver = existing.get('version')
-        # check if version is older
-        if newver is not None and oldver is not None and newver < oldver:
-            return 
-        m1, m2, mm = util.nested_dict_diff(existing, item, self.DIFF_IGNORE_KEYS)
+    # def diff_item(self, existing, item):
+    #     newver = item.get('version')
+    #     oldver = existing.get('version')
+    #     # check if version is older
+    #     if newver is not None and oldver is not None and newver < oldver:
+    #         return 
+    #     m1, m2, mm = util.nested_dict_diff(existing, item, self.DIFF_IGNORE_KEYS)
 
-        # check if dashboard moved folders
-        VERSION = {('dashboard', 'version'), ('meta', 'version'), ('dashboard', 'schemaVersion')}
-        MOVED = {('meta', k) for k in ('folderTitle', 'folderId', 'folderUid', 'folderUrl')}
-        mm = mm - VERSION
-        if mm and not mm - MOVED and ('meta', 'folderUid') in mm:
-            return 'moved'
-        return (m1, m2, mm) if m1 or m2 or mm else False
+    #     # check if dashboard moved folders
+    #     VERSION = {('dashboard', 'version'), ('meta', 'version'), ('dashboard', 'schemaVersion')}
+    #     MOVED = {('meta', k) for k in ('folderTitle', 'folderId', 'folderUid', 'folderUrl')}
+    #     mm = mm - VERSION
+    #     if mm and not mm - MOVED and ('meta', 'folderUid') in mm:
+    #         return 'moved'
+    #     return (m1, m2, mm) if m1 or m2 or mm else False
     
     def pull(self, filter=None):
         payloads = self.api.search_dashboards()
@@ -587,105 +488,13 @@ class Dashboard(Resource):
             current_folder = d['meta'].get('folderTitle') or ROOT_FOLDER
             if current_folder != folder_name:
                 if available_folders is None:
-                    available_folders = {f['title']: f for f in self.search_folders()}
+                    available_folders = {f['title']: f for f in self.api.search_folders()}
                 if folder_name in available_folders:
                     d['meta']['folderId'] = available_folders[folder_name]['id']
                     d['meta']['folderUid'] = available_folders[folder_name]['uid']
                     d['meta']['folderUrl'] = available_folders[folder_name]['url']
                     d['meta']['folderTitle'] = folder_name
         return list(new_items.values())
-    
-    # ----------------------------------- Print ---------------------------------- #
-    
-    def diff_str(self, new, update, missing, unchanged, items, existing, *, allow_delete=False, show_no_changes=True):
-        # title
-        header = util.color_text('bold', "Dashboards:") + '\n'
-
-        # print dashboards grouped by folder
-        lines = ''
-        folders = {d['meta']['folderTitle'] for d in items.values()} | {d['meta']['folderTitle'] for d in existing.values()}
-        for f in sorted(folders):
-            # get dashboards in folder
-            f_items = {k: d for k, d in items.items() if d['meta']['folderTitle'] == f}
-            f_existing = {k: d for k, d in existing.items() if k in f_items}
-            # format folder diff
-            v = super().diff_str(
-                new & set(f_items),
-                {k: v for k, v in update.items() if k in f_items},
-                missing & set(f_existing),
-                unchanged & set(f_items),
-                f_items, existing, title=f'{f}/', 
-                allow_delete=allow_delete,
-                show_no_changes=False,
-            )
-            lines += util.indent(v, 2) + '\n' if v.strip() else ''
-        if not lines.strip():
-            if show_no_changes:
-                return header.rstrip() + util.color_text('unchanged', " :: no changes.")
-            return ''
-        return lines
-
-    def _diff_item_text(self, kind, kind_label, item, other, diff):
-        name = super()._diff_item_text(kind, kind_label, item, other, diff)
-
-        # Dashboard moved folders
-        diffed_keys = {x for xs in diff[2] for x in xs} if diff else set()
-        if kind_label == 'moved' or ({('meta', 'folderUid'), ('meta', 'folderTitle')} & diffed_keys):
-            moved = f"(moved from {util.C.BOLD}{other['meta']['folderTitle']})"
-            return f"""{name} {util.color_text('yellow', moved)}"""
-        return name
-    
-    def _diff_item_value(self, kind, kind_label, keys, item, other=None):
-        if keys == ('meta', 'folderUid'):
-            return None
-        # Display dashboard panel differences
-        if keys == ('dashboard', 'panels'):
-            p1 = {p['id']: p for p in other['dashboard']['panels']}
-            p2 = {p['id']: p for p in item['dashboard']['panels']}
-            m1, m2, mm = util.nested_dict_diff(p1, p2, depth=1)
-            mms = {i: util.nested_dict_diff(p1[i[0]], p2[i[0]])[2] for i in mm}
-            moved = {i for i in mm if not {m[0] for m in mms[i]} - {'gridPos', 'collapsed', 'pluginVersion'}}
-            mm2 = mm - moved
-
-            return (' '.join((
-                util.status_text('new', i=len(m1)),
-                util.status_text('modified', i=len(mm2)),
-                util.status_text('moved', i=len(moved)),
-                util.status_text('deleted', i=len(m2)),
-                util.status_text('unchanged', i=len(set(p1) & set(p2) - set(mm))),
-            )) + '\n' + ''.join(
-                [self._diff_item_block('new', 'panel:', p2[k[0]].get('title')) for k in m1] + 
-                [self._diff_item_block(
-                    'modified', 'panel:', 
-                    (
-                        f"{p1[k[0]].get('title')} {util.color_text('token', '->')} {p2[k[0]].get('title')}" 
-                        if p2[k[0]].get('title') != p1[k[0]].get('title') else 
-                        f"{p1[k[0]].get('title')}"
-                    ) + (
-                        util.color_text('moved', '  moved') 
-                        if k in moved else 
-                        '\n       ' + ', '.join(
-                            util.color_text('token', '.'.join(m)) for m in mms[k] - {('pluginVersion',)}
-                        )
-                    ).rstrip()
-                ) for k in mm] +
-                [self._diff_item_block('deleted', 'panel:', p1[k[0]].get('title')) for k in m2]
-            )).rstrip()
-        
-        # Display dashboard variable differences
-        if keys == ('dashboard', 'templating', 'list'):
-            p1 = {p['name']: p for p in other['dashboard']['templating']['list']}
-            p2 = {p['name']: p for p in item['dashboard']['templating']['list']}
-            m1, m2, mm = util.nested_dict_diff(p1, p2, depth=1)
-            return ('\n' + ''.join(
-                [self._diff_item_block('new', 'var:', k[0]) for k in m1] + 
-                [self._diff_item_block('modified', 'var:', k[0]) for k in mm] +
-                [self._diff_item_block('deleted', 'var:', k[0]) for k in m2]
-            )).rstrip()
-        
-        # Any other differences
-        return super()._diff_item_value(kind, kind_label, keys, item, other)
-
 
 class Datasource(Resource):
     GROUP = 'datasources'
@@ -744,6 +553,7 @@ class LibraryElement(Resource):
 
 
 class DashboardVersion(Resource):
+    DiffClass = diffs.DashboardVersionDiff
     GROUP = 'dashboard_versions'
     TITLE = 'title'
     ID = 'uid'
@@ -774,106 +584,6 @@ class DashboardVersion(Resource):
             'title': d['title'],
             'versions': versions,
         }
-    
-    def _diff_item_value(self, kind, kind_label, keys, item, other=None):
-        if keys == ('versions',):
-            p1 = {p['version']: p for p in other['versions']}
-            p2 = {p['version']: p for p in item['versions']}
-            m1, m2, mm = util.nested_dict_diff(p1, p2, depth=1)
-            unchanged = set(p1) & set(p2) - set(mm)
-            newer = {k: p1[k]['created'] < p2[k]['created'] for k, in mm}
-            
-            # get text for each version range
-            diff_text = {
-                **{a: self._diff_item_block('unchanged', self._prange(a,b, "✓"), self._pdate(p2[a]['created'], p2[b]['created'], center=True), align_value=True) 
-                      for a,b in self._contiguous_ranges(unchanged)},
-                # **{a: self._diff_item_block('new', self._prange(a,b,"B"), self._pdate(p2[a]['created'], p2[b]['created']))
-                #       for a,b in self._contiguous_ranges(k for k, in m1)},
-                **{a: self._diff_item_block('new', " "*8, self._pdate(p2[a]['created'], p2[b]['created']) + " " + util.color_text('new', self._prange(a,b,"B", right=True)), right=True)
-                      for a,b in self._contiguous_ranges(k for k, in m1)},
-                # **{k: self._diff_item_block('modified', f'┌{f" {k} A":->7}', f"{util.color_text('red' if newer[k] else 'green', self._pdate(p1[k]['created']))} {p1[k]['message']}") + 
-                #       self._diff_item_block('modified', f'└{f" B":->7}', f"{util.color_text('green' if newer[k] else 'red', self._pdate(p2[k]['created']))} {p2[k]['message']}") 
-                #       for k, in mm},
-                # **{a: ''.join(
-                #         self._diff_item_block(
-                #             'modified',
-                #             # outer border
-                #             f"{('┌' if k==a and not (a==b and i) else '└' if k==b else '│')}"
-                #             # number/symbol
-                #             f'{f" {k} {AB}":{" " if a<k and i==0 or k<b and i==1 else "─"}>7}', 
-                #             # date and version message
-                #             f"{util.color_text('green' if newer[k]==c else 'red', self._pdate(p[k]['created']))} {p[k]['message']}")
-                #         for i, (p, c, AB) in enumerate(((p1,False,'A'), (p2,True,'B')))
-                #         for k in range(a, b+1)
-                #       )
-                #       for a,b in self._contiguous_ranges(k for k, in mm)},
-                **{a: ''.join(
-                        self._diff_item_block(
-                            'modified',
-                            "",
-                            util.color_text('modified', 
-                                # outer border
-                                f"{('┌' if k==a else '└' if k==b else '│')}"
-                                # number/symbol
-                                f'{f" {k} A":{" " if a<k else "─"}>7}'                
-                            ) + 
-                            # date and version message
-                            f" {util.color_text('green' if not newer[k] else 'red', self._pdate(p1[k]['created']))} "
-                            f" {util.color_text('green' if newer[k] else 'red', self._pdate(p2[k]['created']))} "
-                            + util.color_text('modified', 
-                                # number/symbol
-                                f' {f"B {k} ":{" " if a<k else "─"}<7}'                
-                                # outer border
-                                f"{('┐' if k==a else '┘' if k==b else '│')}"
-                            ) + (
-                                (f"\n{p1[k]['message']}" if p1[k]['message'] else "") + 
-                                (f"\n{p2[k]['message']}" if p2[k]['message'] else "")
-                            ),
-                            right=True
-                        )
-                        # for i, (p, c, AB) in enumerate(((p1,False,'A'), (p2,True,'B')))
-                        for k in range(a, b+1)
-                      )
-                      for a,b in self._contiguous_ranges(k for k, in mm)},
-                **{a: self._diff_item_block('deleted', self._prange(a,b,"A"), self._pdate(p1[a]['created'], p1[b]['created']))
-                      for a,b in self._contiguous_ranges(k for k, in m2)},
-            }
-            # sort by version and join
-            txt = (f"\n" + ''.join(diff_text[k] for k in sorted(diff_text))).rstrip()
-            return txt
-        return super()._diff_item_value(kind, kind_label, keys, item, other)
-    
-    def _prange(self, a, b, lbl='', right=False):
-        r = f"{a}-{b}" if b is not None and a != b else f"{a}"
-        return (
-            f"""{f'{lbl or " "} {r}': <8}"""
-            if right else
-            f"""{f'{r} {lbl or " "}': >8}"""
-        )
-    
-    def _pdate(self, a, b=None, center=False):
-        a = datetime.strptime(a, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M')
-        b = datetime.strptime(b, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=timezone.utc).astimezone().strftime('%m/%d/%y %H:%M') if b else ''
-        if center:
-            a = f"         {a} "
-            b = f"       - {b} "
-            return f'{a}\n{b}'
-        else:
-            r = f" {a} - {b} " if b and a != b else f" {a}"
-        return r
-
-    def _contiguous_ranges(self, xs):
-        xs = sorted(xs)
-        if not xs:
-            return []
-        ranges = [xs[0]]
-        for i in range(1, len(xs)):
-            if xs[i] > xs[i-1]+1:
-                ranges.append(xs[i-1])
-                ranges.append(xs[i])
-        ranges.append(xs[-1])
-        return list(zip(ranges[::2], ranges[1::2]))
-
 
 # ---------------------------------------------------------------------------- #
 #                                   Alerting                                   #
@@ -971,6 +681,7 @@ class NotificationPolicy(Resource):
 
 
 class NotificationTemplate(Resource):
+    DiffClass = diffs.NotificationTemplateDiff
     GROUP = 'notification_templates'
     TITLE = 'name'
     ID = 'name'
@@ -984,11 +695,6 @@ class NotificationTemplate(Resource):
 
     def _pull(self):
         return self.api.search_notification_templates()
-
-    def _diff_item_value(self, kind, kind_label, keys, item, other=None):
-        if keys == ('template',):
-            return "\n" + util.str_diff(item['template'], other.get('template') or '')
-        return super()._diff_item_value(kind, kind_label, keys, item, other)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1167,8 +873,8 @@ class Annotation(Resource):
 
 
 
-# import ipdb
-# @ipdb.iex
+import ipdb
+@ipdb.iex
 def cli():
     import logging
     logging.basicConfig()

@@ -31,6 +31,7 @@ class Compare:
         print("Destination:", self.rs2.api.url if not inverse else self.rs1.api.url)
 
     def diffv(self, filter=None, inverse=False, **kw):
+        # dash1 = self.rs1['dashboards']
         items, existing, d1, d2 = self.pull("dashboard_versions", filter=filter, **kw)
         new, update, missing, unchanged, items, existing = d1.get_diff(existing, items, inverse=inverse, **kw)
         print("Unchanged:", len(unchanged))
@@ -50,14 +51,17 @@ class Compare:
             b = items[k]
             i, j = common_version(a, b)
             print(k)
-            print("A", existing[k]['title'], existing[k]['versions'][i]['version'])
+            print("A", existing[k]['title'], existing[k]['versions'][i]['version'], f'{d1.api.url}/d/{a["uid"]}')
             for ii, d in enumerate(a['versions']):
                 print('~' if ii==i else '', d['created'], d['version'], d['message'])
-            print("B", items[k]['title'], items[k]['versions'][j]['version'])
+            print("B", items[k]['title'], items[k]['versions'][j]['version'], f'{d2.api.url}/d/{b["uid"]}')
             for ii, d in enumerate(b['versions']):
                 print('~' if ii==j else '', d['created'], d['version'], d['message'])
+
+            print(d1.diff_str(*d1.get_diff([a], [b], inverse=inverse, **kw)))
+            print()
             
-            # if input('>?'):from IPython import embed;embed()
+            if input('>?'):from IPython import embed;embed()
 
 
 
