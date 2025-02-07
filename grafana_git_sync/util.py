@@ -145,6 +145,7 @@ def dump_data(data, file_path):
     Returns:
     - None
     """
+    file_path = os.path.expanduser(file_path)
     file_extension = file_path.split('.')[-1].lower()
     # log.info(f"💾↓ pretend write to {file_path}")
     # return

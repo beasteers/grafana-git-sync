@@ -41,7 +41,7 @@ class API:
             headers['Authorization'] = f'Basic {self.basicauth}'
         org = org or self.org
         if org:
-            headers['X-Grafana-Org-Id'] = org
+            headers['X-Grafana-Org-Id'] = str(org)
         if not provenance:
             headers['X-Disable-Provenance'] = 'true'
         response = requests.request(method, f"{self.url}{path}", headers=headers, params=params, **kw)
